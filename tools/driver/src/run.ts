@@ -20,11 +20,20 @@ import {
   expenseInputSchema,
   expenseResultSchema,
   groupDetailSchema,
+  groupSummarySchema,
   inviteResultSchema,
   joinResultSchema,
   parseSignedMinor,
   parseUnsignedMinor,
+  paymentProfileClearResultSchema,
+  paymentProfileUpdateResultSchema,
+  paymentProfileWriteSchema,
+  settlementPreviewSchema,
+  settlementRecordResultSchema,
+  settlementVoidResultSchema,
+  settlementWriteSchema,
   voidExpenseResultSchema,
+  type SettlementWrite,
   type SplitWire,
 } from "@open-split/contracts";
 import {
@@ -42,10 +51,10 @@ import {
   type NetBalance,
   type SplitSpec,
 } from "@open-split/core";
-import { apiRequest } from "./api.ts";
+import { apiRequest, WorkerFailure } from "./api.ts";
 import { rejectUnknown, requireOption, takeFlag, takeOption } from "./args.ts";
 import { DriverFailure } from "./failure.ts";
-import { loadState, saveState, type DriverState, type ExpenseRecord, type GroupRecord, type Session } from "./state.ts";
+import { emptyState, loadState, saveState, type DriverState, type ExpenseRecord, type GroupRecord, type Session } from "./state.ts";
 
 export interface DriverIo {
   stdout: (line: string) => void;
@@ -62,7 +71,12 @@ const HELP = `open-split-driver 打本機 Worker（預設 http://127.0.0.1:8787�
   update-expense --group <id> --expense <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--split equal|exact|percentage|shares] [--amounts id=minor,id=minor] [--basis-points id=bp,id=bp] [--weights id=n,id=n] [--category <text>] [--note <text>]
   void-expense --group <id> --expense <id>
   show-balances --group <id>
-  settle --group <id>
+  settle --group <id> [--record]
+  record-settlement --group <id> --from <memberId> --to <memberId> --amount <minor> --currency <ISO> [--note <text>]
+  void-settlement --group <id> --settlement <id>
+  set-payment-profile --group <id> --member <memberId> --label <text> --details <text>
+  clear-payment-profile --group <id> --member <memberId>
+  show-summary --group <id>
   share-link --group <id>
   claim --token <token>
   join --token <token>
@@ -71,7 +85,7 @@ const HELP = `open-split-driver 打本機 Worker（預設 http://127.0.0.1:8787�
 
 金額一律是整數最小貨幣單位。百分比用基點，100% 是 10000。alice 與 bob 是穩定的假身份。
 狀態檔只記工作階段與這次建立的 id，帳本在 D1。預設是 ./.open-split-driver/state.json。
-accept 會跑：登入 → 建群 → 平均分 → 修改 → 作廢 → 虛擬成員 → 指定金額、百分比、份數、排除某人 → 認領同一位成員 → 用邀請連結加入。結清只印方案，不寫入。`;
+accept 會跑：登入 → 建群 → 平均分 → 修改 → 作廢 → 虛擬成員 → 指定金額、百分比、份數、排除某人 → 認領同一位成員 → 用邀請連結加入 → 收款方式 → 記錄與作廢部分結清 → 寫入結清方案 → 核對摘要。`;
 
 export async function run(argv: readonly string[], io: DriverIo): Promise<number> {
   try {
@@ -114,6 +128,7 @@ async function runAccept(io: DriverIo, statePath: string): Promise<void> {
   const bob = state.session;
   if (!bob) throw new DriverFailure(2, "accept 沒有登入 bob。");
   await dispatch(["login", "--as", "alice"], state, io);
+  const alice = requireSession(state);
   const groupsBefore = new Set(state.groups.map((group) => group.id));
   await dispatch(["create-group", "--name", "京都週末", "--currency", "JPY"], state, io);
   const group = state.groups.find((item) => !groupsBefore.has(item.id));
@@ -308,8 +323,100 @@ async function runAccept(io: DriverIo, statePath: string): Promise<void> {
   await dispatch(["join", "--token", invite.token], state, io);
   await dispatch(["show-balances", "--group", group.id], state, io);
   await dispatch(["settle", "--group", group.id], state, io);
+  await acceptSettleUp(state, group.id, owner.id, alice, bob, io);
   await saveState(statePath, state);
   io.stdout(`state: ${statePath}`);
+}
+
+async function acceptSettleUp(
+  state: DriverState, groupId: string, payeeId: string, payee: Session, bob: Session, io: DriverIo,
+): Promise<void> {
+  io.stdout("# slice 3");
+  const groupArgs = ["--group", groupId];
+  const profileArgs = [...groupArgs, "--member", payeeId, "--label", "銀行轉帳", "--details", "請私訊詢問帳號"];
+  await paymentProfile(profileArgs, { ...state, session: payee }, io, "PUT");
+  const detail = parseResponse(
+    groupDetailSchema, await apiRequest(bob.token, `/api/groups/${groupId}`), "群組",
+  );
+  const profile = detail.members.find(({ id }) => id === payeeId)?.paymentProfile;
+  assertCheck(io, "check.payment_profile_set",
+    profile?.label === "銀行轉帳" && profile.details === "請私訊詢問帳號", "群組成員看不到收款方式。");
+  await expectWorkerStatus(io, "check.other_payment_profile_forbidden", 403,
+    () => paymentProfile(profileArgs, { ...state, session: bob }, io, "PUT"));
+
+  await settle(groupArgs, state, io);
+  const { token } = requireSession(state);
+  const plan = await fetchSettlementPlan(token, groupId);
+  const suggested = plan.transfers.find(({ toId, amount }) => toId === payeeId && parseUnsignedMinor(amount) > 1n);
+  assertCheck(io, "check.partial_settlement_available", suggested !== undefined, "找不到可部分結清的轉帳。");
+  const before = await fetchBalances(token, groupId);
+  const partial = {
+    fromMemberId: suggested.fromId,
+    toMemberId: suggested.toId,
+    amount: "1",
+    currency: plan.currency,
+    note: "部分結清",
+  };
+  const settlementId = await postSettlement(token, groupId, partial, io);
+  const afterPartial = await fetchBalances(token, groupId);
+  assertCheck(io, "invariant.partial_balances_sum_to_zero",
+    afterPartial.sum === "0" && balancesSum(wireBalances(afterPartial.balances)) === 0n,
+    "部分結清後的餘額總和不是 0。");
+  const beforeNets = new Map(before.balances.map(({ participantId, net }) => [participantId, net]));
+  assertCheck(io, "check.partial_settlement_changes_balances",
+    afterPartial.balances.some(({ participantId, net }) => beforeNets.get(participantId) !== net) &&
+    afterPartial.balances.some(({ net }) => net !== "0"), "部分結清應改變餘額且仍有未結清的金額。");
+
+  await voidSettlement([...groupArgs, "--settlement", settlementId], state, io);
+  const afterVoid = await fetchBalances(token, groupId);
+  assertCheck(io, "invariant.void_restores_balances",
+    afterVoid.sum === before.sum && afterVoid.balances.length === beforeNets.size &&
+    afterVoid.balances.every(({ participantId, net }) => beforeNets.get(participantId) === net),
+    "作廢結清後的餘額和結清前不一致。");
+  const activity = parseResponse(
+    activityResultSchema, await apiRequest(token, `/api/groups/${groupId}/activity`), "活動",
+  );
+  for (const action of ["settlement.recorded", "settlement.voided"]) {
+    const exists = activity.entries.some((entry) => entry.entityId === settlementId && entry.action === action);
+    if (exists) io.stdout(`activity: ${action}`);
+    assertCheck(io, `check.activity.${action}`, exists, `活動紀錄找不到 ${action}。`);
+  }
+
+  const outsider = emptyState();
+  await login(["--as", "outsider"], outsider, io);
+  await expectWorkerStatus(io, "check.non_member_settlement_forbidden", 403,
+    () => postSettlement(requireSession(outsider).token, groupId, partial, io));
+  await expectWorkerStatus(io, "check.settlement_currency_mismatch", 422,
+    () => postSettlement(token, groupId, { ...partial, currency: "TWD" }, io));
+
+  await settle([...groupArgs, "--record"], state, io);
+  await showSummary(groupArgs, state, io);
+}
+
+function printCheck(io: DriverIo, key: string, passed: boolean): void {
+  io.stdout(`${key}: ${passed ? "pass" : "fail"}`);
+}
+
+function assertCheck(io: DriverIo, key: string, passed: boolean, message: string): asserts passed {
+  printCheck(io, key, passed);
+  if (!passed) throw new DriverFailure(2, message);
+}
+
+async function expectWorkerStatus(
+  io: DriverIo, key: string, expected: number, request: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await request();
+  } catch (error) {
+    if (error instanceof WorkerFailure) {
+      io.stdout(`${key}.status: ${String(error.status)}`);
+      assertCheck(io, key, error.status === expected, error.message);
+      return;
+    }
+    printCheck(io, key, false);
+    throw error;
+  }
+  assertCheck(io, key, false, `Worker 應回傳 ${String(expected)}，但請求成功。`);
 }
 
 async function dispatch(
@@ -344,6 +451,16 @@ async function dispatch(
       return showBalances(args, state, io);
     case "settle":
       return settle(args, state, io);
+    case "record-settlement":
+      return recordSettlement(args, state, io);
+    case "void-settlement":
+      return voidSettlement(args, state, io);
+    case "set-payment-profile":
+      return paymentProfile(args, state, io, "PUT");
+    case "clear-payment-profile":
+      return paymentProfile(args, state, io, "DELETE");
+    case "show-summary":
+      return showSummary(args, state, io);
     case "share-link":
       return shareLink(args, state, io);
     case "claim":
@@ -573,25 +690,152 @@ async function showBalances(args: readonly string[], state: DriverState, io: Dri
 }
 
 async function settle(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
-  const session = requireSession(state);
+  const { token } = requireSession(state);
+  const groupFlag = takeOption(args, "group");
+  const recordFlag = takeFlag(groupFlag.rest, "record");
+  rejectUnknown(recordFlag.rest);
+  const groupId = requireOption(groupFlag.value, "group");
+  const balances = await printInvariants(token, groupId, io);
+  const plan = await fetchSettlementPlan(token, groupId);
+  const nets = wireBalances(balances.balances);
+  const bound = transferBound(nets.length);
+  io.stdout(`transfer.count: ${String(plan.transfers.length)}`);
+  io.stdout(`transfer.bound: ${String(plan.transferBound)}`);
+  assertCheck(io, "invariant.transfer_bound",
+    plan.transfers.length <= bound && plan.transferBound === bound && plan.participantCount === nets.length,
+    "轉帳數或參與人數不符合餘額。");
+  for (const transfer of plan.transfers) {
+    io.stdout(`transfer: ${transfer.fromId} -> ${transfer.toId} ${transfer.amount}`);
+  }
+
+  const preview = plan.transfers.map((transfer) => ({ ...transfer, amount: parseUnsignedMinor(transfer.amount) }));
+  assertCheck(io, recordFlag.present ? "invariant.preview_settled_to_zero" : "invariant.settled_to_zero",
+    settledToZero(applyTransfers(nets, preview)), "結清方案沒有讓所有人歸零。");
+  if (recordFlag.present) {
+    for (const { fromId, toId, amount } of plan.transfers) {
+      await postSettlement(token, groupId, {
+        fromMemberId: fromId, toMemberId: toId, amount, currency: plan.currency,
+      }, io);
+    }
+    const after = await fetchBalances(token, groupId);
+    assertCheck(io, "invariant.settled_to_zero",
+      after.sum === "0" && after.balances.length === nets.length &&
+      after.balances.every(({ net }) => net === "0"),
+      "寫入結清後，伺服器的餘額還沒歸零。");
+  } else {
+    io.stdout("note: 加上 --record 可把方案寫入帳本。");
+  }
+}
+
+async function fetchSettlementPlan(token: string, groupId: string) {
+  return parseResponse(
+    settlementPreviewSchema,
+    await apiRequest(token, `/api/groups/${groupId}/settlement-plan`),
+    "結清方案",
+  );
+}
+
+async function recordSettlement(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const { token } = requireSession(state);
+  const groupFlag = takeOption(args, "group");
+  const fromFlag = takeOption(groupFlag.rest, "from");
+  const toFlag = takeOption(fromFlag.rest, "to");
+  const amountFlag = takeOption(toFlag.rest, "amount");
+  const currencyFlag = takeOption(amountFlag.rest, "currency");
+  const noteFlag = takeOption(currencyFlag.rest, "note");
+  rejectUnknown(noteFlag.rest);
+  const groupId = requireOption(groupFlag.value, "group");
+  const body = settlementWriteSchema.parse({
+    fromMemberId: requireOption(fromFlag.value, "from"),
+    toMemberId: requireOption(toFlag.value, "to"),
+    amount: requireOption(amountFlag.value, "amount"),
+    currency: requireOption(currencyFlag.value, "currency"),
+    note: noteFlag.value,
+  });
+  await postSettlement(token, groupId, body, io);
+}
+
+async function postSettlement(token: string, groupId: string, body: SettlementWrite, io: DriverIo) {
+  const result = parseResponse(
+    settlementRecordResultSchema,
+    await apiRequest(token, `/api/groups/${groupId}/settlements`, { method: "POST", body }),
+    "記錄結清",
+  );
+  io.stdout(`settlement_id: ${result.id}`);
+  return result.id;
+}
+
+async function voidSettlement(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const { token } = requireSession(state);
+  const groupFlag = takeOption(args, "group");
+  const settlementFlag = takeOption(groupFlag.rest, "settlement");
+  rejectUnknown(settlementFlag.rest);
+  const groupId = requireOption(groupFlag.value, "group");
+  const settlementId = requireOption(settlementFlag.value, "settlement");
+  const result = parseResponse(
+    settlementVoidResultSchema,
+    await apiRequest(token, `/api/groups/${groupId}/settlements/${settlementId}/void`, { method: "POST" }),
+    "作廢結清",
+  );
+  if (result.id !== settlementId) throw new DriverFailure(2, "作廢結果的 id 與請求不一致。");
+  io.stdout(`settlement_voided: ${result.id}`);
+}
+
+async function paymentProfile(
+  args: readonly string[], state: DriverState, io: DriverIo, method: "PUT" | "DELETE",
+): Promise<void> {
+  const { token } = requireSession(state);
+  const groupFlag = takeOption(args, "group");
+  const memberFlag = takeOption(groupFlag.rest, "member");
+  const groupId = requireOption(groupFlag.value, "group");
+  const memberId = requireOption(memberFlag.value, "member");
+  const path = `/api/groups/${groupId}/members/${memberId}/payment-profile`;
+  if (method === "DELETE") {
+    rejectUnknown(memberFlag.rest);
+    parseResponse(paymentProfileClearResultSchema, await apiRequest(token, path, { method }), "清除收款方式");
+    io.stdout(`payment_profile_cleared: ${memberId}`);
+    return;
+  }
+  const labelFlag = takeOption(memberFlag.rest, "label");
+  const detailsFlag = takeOption(labelFlag.rest, "details");
+  rejectUnknown(detailsFlag.rest);
+  const body = paymentProfileWriteSchema.parse({
+    label: requireOption(labelFlag.value, "label"),
+    details: requireOption(detailsFlag.value, "details"),
+  });
+  const result = parseResponse(
+    paymentProfileUpdateResultSchema, await apiRequest(token, path, { method, body }), "設定收款方式",
+  );
+  io.stdout(`payment_profile_id: ${result.id}`);
+}
+
+async function showSummary(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const { token } = requireSession(state);
   const groupFlag = takeOption(args, "group");
   rejectUnknown(groupFlag.rest);
-  const group = requireGroup(state, requireOption(groupFlag.value, "group"));
-  const balances = await printInvariants(session.token, group.id, io);
-  const nets = wireBalances(balances.balances);
-  const transfers = simplifyDebts(nets);
-  const bound = transferBound(nets.length);
-  io.stdout(`transfer.count: ${String(transfers.length)}`);
-  io.stdout(`transfer.bound: ${String(bound)}`);
-  io.stdout(`invariant.transfer_bound: ${transfers.length <= bound ? "pass" : "fail"}`);
-  if (transfers.length > bound) throw new DriverFailure(2, "轉帳數超過參與者 − 1。");
-  for (const transfer of transfers) {
-    io.stdout(`transfer: ${transfer.fromId} -> ${transfer.toId} ${formatMinor(transfer.amount)}`);
+  const groupId = requireOption(groupFlag.value, "group");
+  const summary = parseResponse(
+    groupSummarySchema, await apiRequest(token, `/api/groups/${groupId}/summary`), "摘要",
+  );
+  const balances = await fetchBalances(token, groupId);
+  io.stdout(`summary.currency: ${summary.currency}`);
+  for (const { memberId, paid, share, settledPaid, settledReceived, net } of summary.members) {
+    io.stdout(`summary.member.${memberId}: paid=${paid} share=${share} settled_paid=${settledPaid} settled_received=${settledReceived} net=${net}`);
   }
-  const cleared = settledToZero(applyTransfers(nets, transfers));
-  io.stdout(`invariant.settled_to_zero: ${cleared ? "pass" : "fail"}`);
-  if (!cleared) throw new DriverFailure(2, "結清方案沒有讓所有人歸零。");
-  io.stdout("note: 這只印出結清方案。把結清寫入帳本是切片 3。");
+  for (const { category, total } of summary.categories) {
+    io.stdout(`summary.category: ${JSON.stringify(category)} ${total}`);
+  }
+  io.stdout(`summary.total_spent: ${summary.totalSpent}`);
+
+  const nets = new Map(balances.balances.map(({ participantId, net }) => [participantId, net]));
+  const summaryNets = new Map(summary.members.map(({ memberId, net }) => [memberId, net]));
+  const matches = summary.members.every(({ memberId, net }) => net === (nets.get(memberId) ?? "0")) &&
+    balances.balances.every(({ participantId, net }) => summaryNets.get(participantId) === net);
+  const total = sumMinor(summary.categories.map(({ total }) => parseUnsignedMinor(total)));
+  const categoriesMatch = total === parseUnsignedMinor(summary.totalSpent);
+  printCheck(io, "invariant.summary_matches_balances", matches);
+  printCheck(io, "invariant.categories_sum_to_total", categoriesMatch);
+  if (!matches || !categoriesMatch) throw new DriverFailure(2, "摘要與餘額或分類合計不一致。");
 }
 
 async function shareLink(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
@@ -700,12 +944,16 @@ async function joinGroup(args: readonly string[], state: DriverState, io: Driver
   io.stdout("activity: member.joined");
 }
 
-async function printInvariants(token: string, groupId: string, io: DriverIo) {
-  const balances = parseResponse(
+async function fetchBalances(token: string, groupId: string) {
+  return parseResponse(
     balancesResultSchema,
     await apiRequest(token, `/api/groups/${groupId}/balances`),
     "餘額",
   );
+}
+
+async function printInvariants(token: string, groupId: string, io: DriverIo) {
+  const balances = await fetchBalances(token, groupId);
   io.stdout(`group_id: ${balances.groupId}`);
   for (const row of balances.balances) io.stdout(`balance.${row.participantId}: ${row.net}`);
   io.stdout(`balances_sum_minor: ${balances.sum}`);
@@ -721,6 +969,11 @@ async function printInvariants(token: string, groupId: string, io: DriverIo) {
         participantIds: expense.participantIds,
         split: wireSplit(expense.split),
       })),
+    detail.settlements.filter((row) => !row.voided).map((row) => ({
+      fromId: row.fromMemberId,
+      toId: row.toMemberId,
+      amount: parseUnsignedMinor(row.amount),
+    })),
   );
   const actual = new Map(balances.balances.map((row) => [row.participantId, row.net]));
   const same =
