@@ -45,6 +45,7 @@ export {
 } from "./settle.ts";
 
 export {
+  categoryPercent,
   summarizeCategories,
   summarizeLedger,
   summarizeMembers,

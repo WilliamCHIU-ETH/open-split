@@ -1,4 +1,5 @@
 import type { GroupSummary } from "@open-split/contracts";
+import { categoryPercent, minor } from "@open-split/core";
 import { formatMoney, netLabel, netTone } from "./format.ts";
 
 export function LedgerSummary({ summary, names }: { summary: GroupSummary; names: ReadonlyMap<string, string> }) {
@@ -50,7 +51,7 @@ export function LedgerSummary({ summary, names }: { summary: GroupSummary; names
         <ul className="stack mt-3">
           {summary.categories.map(({ category, total }) => {
             const label = category ?? "未分類";
-            const percent = totalSpent === "0" ? 0n : (BigInt(total) * 100n) / BigInt(totalSpent);
+            const percent = categoryPercent(minor(BigInt(total)), minor(BigInt(totalSpent)));
             const share = percent === 0n && total !== "0" ? "不到 1%" : `${percent}%`;
             return (
               <li key={category === null ? "uncategorized" : `category:${category}`} className="card settle-card">

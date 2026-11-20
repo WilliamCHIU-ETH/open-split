@@ -4,6 +4,7 @@ import {
   LedgerError,
   LedgerErrorCode,
   balancesSum,
+  categoryPercent,
   computeBalances,
   minor,
   settledToZero,
@@ -101,6 +102,37 @@ describe("settle-up invariants", () => {
     );
   });
 
+  it("floors each category percentage within zero and one hundred", () => {
+    fc.assert(
+      fc.property(categorizedExpensesArb, (expenses) => {
+        const { categories, totalSpent } = summarizeLedger({ expenses, settlements: [] });
+        const spentUnits = toMinorUnits(totalSpent);
+        for (const { total } of categories) {
+          const percent = categoryPercent(total, totalSpent);
+          expect(percent).toBeGreaterThanOrEqual(0n);
+          expect(percent).toBeLessThanOrEqual(100n);
+          if (spentUnits > 0n) {
+            const scaledTotal = toMinorUnits(total) * 100n;
+            expect(percent * spentUnits).toBeLessThanOrEqual(scaledTotal);
+            expect(scaledTotal).toBeLessThan((percent + 1n) * spentUnits);
+          }
+        }
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it("handles zero spending and a category covering all spending", () => {
+    fc.assert(
+      fc.property(categorizedExpensesArb, (expenses) => {
+        const { totalSpent } = summarizeLedger({ expenses, settlements: [] });
+        expect(categoryPercent(totalSpent, minor(0n))).toBe(0n);
+        expect(categoryPercent(totalSpent, totalSpent)).toBe(totalSpent === 0n ? 0n : 100n);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
   it("accounts for every expense in the category totals", () => {
     fc.assert(
       fc.property(categorizedExpensesArb, (expenses) => {
@@ -130,6 +162,12 @@ describe("settle-up invariants", () => {
 });
 
 describe("settle-up examples", () => {
+  it.each([[-1n, 0n], [1n, -1n]] as const)("rejects negative category percentage inputs (%s, %s)", (total, totalSpent) => {
+    const calculate = () => categoryPercent(minor(total), minor(totalSpent));
+    expect(calculate).toThrow(LedgerError);
+    expect(calculate).toThrow(expect.objectContaining({ code: LedgerErrorCode.negativeAmount }));
+  });
+
   const expense: Expense = {
     payerId: "chen",
     amount: minor(5n),

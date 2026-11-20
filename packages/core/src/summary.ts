@@ -1,7 +1,7 @@
 import { allocate, type ParticipantId } from "./allocate.ts";
 import type { Expense } from "./balance.ts";
 import { LedgerError, LedgerErrorCode } from "./errors.ts";
-import { addMinor, compareMinor, minor, sumMinor, ZERO_MINOR, type Minor } from "./money.ts";
+import { addMinor, compareMinor, minor, sumMinor, toMinorUnits, ZERO_MINOR, type Minor } from "./money.ts";
 import type { Transfer } from "./settle.ts";
 
 export interface MemberSummary {
@@ -18,6 +18,16 @@ export interface CategorySummary {
   readonly category: string | null;
   readonly total: Minor;
   readonly count: number;
+}
+
+/** Returns the category's whole-number percentage, rounded down, or 0n for zero total spending. */
+export function categoryPercent(total: Minor, totalSpent: Minor): bigint {
+  const categoryUnits = toMinorUnits(total);
+  const spentUnits = toMinorUnits(totalSpent);
+  if (categoryUnits < 0n || spentUnits < 0n) {
+    throw new LedgerError(LedgerErrorCode.negativeAmount, "Category total and total spending must be non-negative.");
+  }
+  return spentUnits === 0n ? 0n : (categoryUnits * 100n) / spentUnits;
 }
 
 export function summarizeMembers(expenses: readonly Expense[]): readonly MemberSummary[] {
