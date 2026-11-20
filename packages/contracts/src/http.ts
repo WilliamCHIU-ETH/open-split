@@ -60,6 +60,46 @@ export const inviteResultSchema = z.strictObject({
   token: z.string().min(1),
 });
 
+export const claimGrantSchema = z.strictObject({
+  claimPath: z.string().min(1),
+  token: z.string().min(1),
+});
+
+export const addMemberResultSchema = memberSchema.extend({
+  claim: claimGrantSchema.nullable(),
+});
+
+export const invitePreviewSchema = z.strictObject({
+  groupId: idSchema,
+  groupName: z.string().min(1),
+  currency: currencyCodeSchema,
+  alreadyMember: z.boolean(),
+});
+
+export const joinResultSchema = z.strictObject({
+  groupId: idSchema,
+  member: memberSchema,
+  alreadyMember: z.boolean(),
+});
+
+export const claimPreviewSchema = z.strictObject({
+  groupId: idSchema,
+  groupName: z.string().min(1),
+  currency: currencyCodeSchema,
+  memberId: idSchema,
+  displayName: z.string().min(1),
+  status: z.enum(["open", "yours", "taken", "already_member"]),
+});
+
+export const claimResultSchema = z.strictObject({
+  groupId: idSchema,
+  member: memberSchema,
+});
+
+export const inviteTokenSchema = z.string().uuid();
+
+export const claimTokenSchema = z.string().regex(/^[a-f0-9]{64}$/, "認領連結不正確。");
+
 export const settlementPreviewSchema = z.strictObject({
   transfers: z.array(transferWireSchema),
 });
@@ -72,3 +112,9 @@ export type DevUser = z.infer<typeof devUserSchema>;
 export type ExpenseView = z.infer<typeof expenseViewSchema>;
 export type GroupDetail = z.infer<typeof groupDetailSchema>;
 export type SettlementPreview = z.infer<typeof settlementPreviewSchema>;
+export type AddMemberResult = z.infer<typeof addMemberResultSchema>;
+export type ClaimGrant = z.infer<typeof claimGrantSchema>;
+export type InvitePreview = z.infer<typeof invitePreviewSchema>;
+export type JoinResult = z.infer<typeof joinResultSchema>;
+export type ClaimPreview = z.infer<typeof claimPreviewSchema>;
+export type ClaimResult = z.infer<typeof claimResultSchema>;

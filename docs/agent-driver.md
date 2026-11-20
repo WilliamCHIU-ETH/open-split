@@ -11,7 +11,13 @@ pnpm driver login --as alice
 pnpm driver login --as bob --provider google
 pnpm driver create-group --name 京都週末 --currency JPY
 pnpm driver add-member --group <id> --name Bob --virtual
+pnpm driver add-member --group <id> --name Bob --user <userId>
 pnpm driver add-expense --group <id> --payer <memberId> --amount 3000 --currency JPY --participants <id>,<id> --split equal
+pnpm driver add-expense --group <id> --payer <memberId> --amount 600 --currency JPY --participants <id>,<id> --split exact --amounts <id>=100,<id>=500
+pnpm driver add-expense --group <id> --payer <memberId> --amount 1000 --currency JPY --participants <id>,<id> --split percentage --basis-points <id>=6000,<id>=4000
+pnpm driver add-expense --group <id> --payer <memberId> --amount 1001 --currency JPY --participants <id>,<id> --split shares --weights <id>=1,<id>=2
+pnpm driver claim --token <token>
+pnpm driver join --token <token>
 pnpm driver show-balances --group <id>
 pnpm driver settle --group <id>
 pnpm driver share-link --group <id>
@@ -33,7 +39,7 @@ pnpm driver login --as alice --environment production
 
 必須失敗。正式環境不接受假登入。
 
-`accept` 會做完：bob 與 alice 以假身份登入、alice 建立群組、加入已登入的 bob、平均分 3000、把金額改成 3600、作廢另一筆、印餘額，再用核心印結清方案、建立邀請連結。虛擬成員與結清寫入不在這一片。邀請連結不是 `liff.shareTargetPicker()`。那個屬於切片 6。認領邀請也還沒做。
+`accept` 會做完：bob 與 alice 以假身份登入、alice 建立群組、加入已登入的 bob、平均分、修改、作廢、建立虛擬成員、指定金額、百分比、份數、排除某人、kenji 認領同一個成員、chao 用邀請連結加入，再印餘額與結清方案。結清仍只印方案，不寫入。邀請連結不是 `liff.shareTargetPicker()`。那個屬於切片 6。
 
 先啟動本機 Worker（`.dev.vars` 要打開假身份，並套用遷移）：
 

@@ -1,11 +1,13 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import {
   createDevGoogleProvider,
   createDevLineProvider,
   type AuthProviderId,
 } from "@open-split/auth";
 import {
+  splitSchema,
   type ExpenseInput,
+  type SplitWire,
   parseUnsignedMinor,
 } from "@open-split/contracts";
 import {
@@ -18,6 +20,7 @@ import {
   sumMinor,
   toMinorUnits,
   type Minor,
+  type SplitSpec,
 } from "@open-split/core";
 import type { LedgerDb } from "../db/client.ts";
 import {
@@ -227,10 +230,48 @@ export async function addMember(
   actor: SessionUser,
   input: { readonly groupId: string; readonly displayName: string; readonly virtual: boolean; readonly userId?: string },
 ) {
-  if (input.virtual || input.userId === undefined) {
-    throw new ServiceError(422, "virtual_not_in_slice", "虛擬成員是切片 2。這次只能加入已經登入的人。");
-  }
   const { members } = await requireMembership(db, input.groupId, actor.userId);
+  if (input.virtual) {
+    const now = new Date();
+    const memberId = newId("mem");
+    const token = newSecret();
+    await db.batch([
+      db.insert(groupMembers).values({
+        id: memberId,
+        groupId: input.groupId,
+        displayName: input.displayName,
+        userId: null,
+        role: "member",
+        claimTokenHash: await sha256Hex(token),
+        claimedAt: null,
+        createdAt: now,
+      }),
+      activityInsert(db, {
+        groupId: input.groupId,
+        actorUserId: actor.userId,
+        action: "member.virtual_created",
+        entityType: "member",
+        entityId: memberId,
+        summary: `建立虛擬成員「${input.displayName}」`,
+        createdAt: now,
+      }),
+    ]);
+    return {
+      ...toMember({
+        id: memberId,
+        groupId: input.groupId,
+        displayName: input.displayName,
+        userId: null,
+        role: "member",
+        claimedAt: null,
+      }),
+      claim: { claimPath: `/claim/${token}`, token },
+    };
+  }
+
+  if (input.userId === undefined) {
+    throw new ServiceError(422, "user_required", "已登入的成員需要 userId。還沒有帳號的人請設 virtual。");
+  }
   const linked = await db.select().from(users).where(eq(users.id, input.userId)).limit(1);
   if (!linked[0]) throw new ServiceError(404, "not_found", "找不到要加入的使用者。請先讓對方在這台機器登入一次。");
   if (members.some((member) => member.userId === input.userId)) {
@@ -260,13 +301,17 @@ export async function addMember(
       createdAt: now,
     }),
   ]);
-  return toMember({
-    id: memberId,
-    groupId: input.groupId,
-    displayName: input.displayName,
-    userId,
-    role: "member",
-  });
+  return {
+    ...toMember({
+      id: memberId,
+      groupId: input.groupId,
+      displayName: input.displayName,
+      userId,
+      role: "member",
+      claimedAt: null,
+    }),
+    claim: null,
+  };
 }
 
 export async function addExpense(db: LedgerDb, actor: SessionUser, input: ExpenseInput) {
@@ -285,6 +330,7 @@ export async function addExpense(db: LedgerDb, actor: SessionUser, input: Expens
       fxDenominator: null,
       category: blankToNull(input.category),
       note: blankToNull(input.note),
+      splitJson: JSON.stringify(input.split),
       voidedAt: null,
       createdByUserId: actor.userId,
       createdAt: now,
@@ -326,6 +372,7 @@ export async function updateExpense(
         currency: input.currency,
         category: blankToNull(input.category),
         note: blankToNull(input.note),
+        splitJson: JSON.stringify(input.split),
         updatedAt: now,
       })
       .where(eq(expenses.id, expenseId)),
@@ -422,18 +469,187 @@ export async function createInvite(db: LedgerDb, actor: SessionUser, groupId: st
   return { invitePath: `/invite/${token}`, token };
 }
 
-async function requireMembership(db: LedgerDb, groupId: string, userId: string) {
+export async function previewInvite(db: LedgerDb, actor: SessionUser, token: string) {
+  const invite = await requireInvite(db, token);
+  const group = await requireGroup(db, invite.groupId);
+  const members = await listMembers(db, invite.groupId);
+  return {
+    groupId: group.id,
+    groupName: group.name,
+    currency: group.defaultCurrency,
+    alreadyMember: members.some((member) => member.userId === actor.userId),
+  };
+}
+
+export async function acceptInvite(db: LedgerDb, actor: SessionUser, token: string) {
+  const invite = await requireInvite(db, token);
+  const members = await listMembers(db, invite.groupId);
+  const existing = members.find((member) => member.userId === actor.userId);
+  if (existing) return { groupId: invite.groupId, member: toMember(existing), alreadyMember: true };
+  const now = new Date();
+  const memberId = newId("mem");
+  await db.batch([
+    db.insert(groupMembers).values({
+      id: memberId,
+      groupId: invite.groupId,
+      displayName: actor.displayName,
+      userId: actor.userId,
+      role: "member",
+      claimTokenHash: null,
+      claimedAt: null,
+      createdAt: now,
+    }),
+    activityInsert(db, {
+      groupId: invite.groupId,
+      actorUserId: actor.userId,
+      action: "member.joined",
+      entityType: "member",
+      entityId: memberId,
+      summary: `用邀請連結加入，成為「${actor.displayName}」`,
+      createdAt: now,
+    }),
+  ]);
+  return {
+    groupId: invite.groupId,
+    member: toMember({
+      id: memberId,
+      groupId: invite.groupId,
+      displayName: actor.displayName,
+      userId: actor.userId,
+      role: "member",
+      claimedAt: null,
+    }),
+    alreadyMember: false,
+  };
+}
+
+export async function previewClaim(db: LedgerDb, actor: SessionUser, token: string) {
+  const member = await findClaimMember(db, token);
+  const group = await requireGroup(db, member.groupId);
+  const members = await listMembers(db, member.groupId);
+  const mine = members.find((row) => row.userId === actor.userId);
+  let status: "open" | "yours" | "taken" | "already_member";
+  if (member.userId === actor.userId) status = "yours";
+  else if (member.userId !== null) status = "taken";
+  else if (mine) status = "already_member";
+  else status = "open";
+  return {
+    groupId: group.id,
+    groupName: group.name,
+    currency: group.defaultCurrency,
+    memberId: member.id,
+    displayName: member.displayName,
+    status,
+  };
+}
+
+export async function claimMember(db: LedgerDb, actor: SessionUser, token: string) {
+  const member = await findClaimMember(db, token);
+  if (member.userId !== null) {
+    throw new ServiceError(409, "already_claimed", "這位成員已經被認領。");
+  }
+  const members = await listMembers(db, member.groupId);
+  if (members.some((row) => row.userId === actor.userId)) {
+    throw new ServiceError(409, "already_member", "你已經是這個群組的成員，不能再認領另一個位置。");
+  }
+  const now = new Date();
+  await db
+    .update(groupMembers)
+    .set({ userId: actor.userId, claimedAt: now, claimTokenHash: null })
+    .where(and(eq(groupMembers.id, member.id), isNull(groupMembers.userId)));
+  const saved = await db.select().from(groupMembers).where(eq(groupMembers.id, member.id)).limit(1);
+  const row = saved[0];
+  if (!row || row.userId !== actor.userId) {
+    throw new ServiceError(409, "claim_conflict", "這位成員剛剛被認領了。");
+  }
+  await db.batch([
+    activityInsert(db, {
+      groupId: member.groupId,
+      actorUserId: actor.userId,
+      action: "member.claimed",
+      entityType: "member",
+      entityId: member.id,
+      summary: `認領了「${member.displayName}」。過去的份額仍掛在同一位成員。`,
+      createdAt: now,
+    }),
+  ]);
+  return { groupId: member.groupId, member: toMember(row) };
+}
+
+export async function rotateClaimLink(db: LedgerDb, actor: SessionUser, groupId: string, memberId: string) {
+  await requireMembership(db, groupId, actor.userId);
+  const rows = await db.select().from(groupMembers).where(eq(groupMembers.id, memberId)).limit(1);
+  const member = rows[0];
+  if (!member || member.groupId !== groupId) throw new ServiceError(404, "not_found", "找不到這位成員。");
+  if (member.userId !== null) {
+    throw new ServiceError(409, "already_claimed", "這位成員已經認領，不能再發認領連結。");
+  }
+  const token = newSecret();
+  const now = new Date();
+  await db.batch([
+    db
+      .update(groupMembers)
+      .set({ claimTokenHash: await sha256Hex(token) })
+      .where(and(eq(groupMembers.id, memberId), isNull(groupMembers.userId))),
+    activityInsert(db, {
+      groupId,
+      actorUserId: actor.userId,
+      action: "member.claim_link_rotated",
+      entityType: "member",
+      entityId: memberId,
+      summary: `重新產生「${member.displayName}」的認領連結。舊連結失效。`,
+      createdAt: now,
+    }),
+  ]);
+  return { claimPath: `/claim/${token}`, token };
+}
+
+async function requireGroup(db: LedgerDb, groupId: string) {
   const groupRows = await db.select().from(groups).where(eq(groups.id, groupId)).limit(1);
   const group = groupRows[0];
   if (!group) throw new ServiceError(404, "not_found", "找不到這個群組。");
-  const members = await db
+  return group;
+}
+
+async function listMembers(db: LedgerDb, groupId: string): Promise<MemberRow[]> {
+  return db
     .select()
     .from(groupMembers)
     .where(eq(groupMembers.groupId, groupId))
     .orderBy(asc(groupMembers.createdAt), asc(groupMembers.id));
+}
+
+async function requireMembership(db: LedgerDb, groupId: string, userId: string) {
+  const group = await requireGroup(db, groupId);
+  const members = await listMembers(db, groupId);
   const actor = members.find((member) => member.userId === userId);
   if (!actor) throw new ServiceError(403, "not_a_member", "你不是這個群組的成員。");
   return { group, members, actor };
+}
+
+async function requireInvite(db: LedgerDb, token: string) {
+  const rows = await db
+    .select()
+    .from(inviteLinks)
+    .where(eq(inviteLinks.tokenHash, await sha256Hex(token)))
+    .limit(1);
+  const invite = rows[0];
+  if (!invite || invite.revokedAt) throw new ServiceError(404, "not_found", "這條邀請連結無效。");
+  if (invite.expiresAt && invite.expiresAt.getTime() <= Date.now()) {
+    throw new ServiceError(404, "not_found", "這條邀請連結已經過期。");
+  }
+  return invite;
+}
+
+async function findClaimMember(db: LedgerDb, token: string): Promise<MemberRow> {
+  const rows = await db
+    .select()
+    .from(groupMembers)
+    .where(eq(groupMembers.claimTokenHash, await sha256Hex(token)))
+    .limit(1);
+  const member = rows[0];
+  if (!member) throw new ServiceError(404, "not_found", "這條認領連結無效，或這位成員已經被認領。");
+  return member;
 }
 
 async function loadExpense(db: LedgerDb, groupId: string, expenseId: string): Promise<ExpenseRow> {
@@ -474,21 +690,24 @@ async function projectBalances(db: LedgerDb, groupId: string) {
   const active = expenseRows.filter((row) => row.voidedAt === null);
   const shares = await loadShares(db, groupId);
   return computeBalances(
-    active.map((row) => ({
-      payerId: row.payerMemberId,
-      amount: minorFromSafeInteger(row.amountMinor),
-      participantIds: (shares.get(row.id) ?? []).map((share) => share.memberId),
-      split: { type: "equal" as const },
-    })),
+    active.map((row) => {
+      const parts = shares.get(row.id) ?? [];
+      if (parts.length === 0) throw new ServiceError(500, "missing_shares", "這筆支出沒有份額。");
+      const amounts: Record<string, Minor> = {};
+      for (const part of parts) amounts[part.memberId] = minorFromSafeInteger(part.amountMinor);
+      return {
+        payerId: row.payerMemberId,
+        amount: minorFromSafeInteger(row.amountMinor),
+        participantIds: parts.map((part) => part.memberId),
+        split: { type: "exact" as const, amounts },
+      };
+    }),
   );
 }
 
 function prepareExpense(defaultCurrency: string, members: readonly MemberRow[], input: ExpenseInput) {
   if (input.currency !== defaultCurrency) {
     throw new ServiceError(422, "currency_mismatch", "支出幣別必須和群組預設幣別相同。換匯是切片 4。");
-  }
-  if (input.split.type !== "equal") {
-    throw new ServiceError(422, "split_not_in_slice", "指定金額、百分比與份數是切片 2。這次只接受平均分。");
   }
   const known = new Set(members.map((member) => member.id));
   if (!known.has(input.payerId)) throw new ServiceError(422, "unknown_member", "付款的人不是這個群組的成員。");
@@ -499,7 +718,7 @@ function prepareExpense(defaultCurrency: string, members: readonly MemberRow[], 
   const shares = allocate({
     amount,
     participantIds: input.participantIds,
-    split: { type: "equal" },
+    split: toCoreSplit(input.split),
   });
   const total = sumMinor(shares.map((share) => share.amount));
   if (toMinorUnits(total) !== toMinorUnits(amount)) {
@@ -529,6 +748,7 @@ function toMember(row: {
   readonly displayName: string;
   readonly userId: string | null;
   readonly role: "owner" | "member";
+  readonly claimedAt: Date | null;
 }) {
   return {
     id: row.id,
@@ -537,6 +757,7 @@ function toMember(row: {
     userId: row.userId,
     role: row.role,
     virtual: row.userId === null,
+    claimedAt: row.claimedAt ? row.claimedAt.toISOString() : null,
   };
 }
 
@@ -547,7 +768,7 @@ function toExpenseView(row: ExpenseRow, shares: readonly ShareRow[]) {
     amount: formatMinor(minorFromSafeInteger(row.amountMinor)),
     currency: row.currency,
     participantIds: shares.map((share) => share.memberId),
-    split: { type: "equal" as const },
+    split: readSplit(row.splitJson),
     category: row.category,
     note: row.note,
     voided: row.voidedAt !== null,
@@ -559,8 +780,37 @@ function toExpenseView(row: ExpenseRow, shares: readonly ShareRow[]) {
 }
 
 function expenseSummary(verb: string, input: ExpenseInput): string {
-  const category = input.category ? `（${input.category}）` : "";
-  return `${verb} ${input.amount} ${input.currency}${category}`;
+  const category = input.category ? `，${input.category}` : "";
+  return `${verb} ${input.amount} ${input.currency}（${splitLabel(input.split.type)}）${category}`;
+}
+
+function splitLabel(type: SplitWire["type"]): string {
+  if (type === "exact") return "指定金額";
+  if (type === "percentage") return "百分比";
+  if (type === "shares") return "份數";
+  return "平均分";
+}
+
+function toCoreSplit(split: SplitWire): SplitSpec {
+  if (split.type === "equal") return { type: "equal" };
+  if (split.type === "percentage") return { type: "percentage", basisPoints: split.basisPoints };
+  if (split.type === "shares") return { type: "shares", weights: split.weights };
+  const amounts: Record<string, Minor> = {};
+  for (const [id, value] of Object.entries(split.amounts)) amounts[id] = parseUnsignedMinor(value);
+  return { type: "exact", amounts };
+}
+
+function readSplit(raw: string | null): SplitWire {
+  if (raw === null || raw.length === 0) return { type: "equal" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new ServiceError(500, "bad_split", "這筆支出的分法讀不出來。");
+  }
+  const result = splitSchema.safeParse(parsed);
+  if (!result.success) throw new ServiceError(500, "bad_split", "這筆支出的分法讀不出來。");
+  return result.data;
 }
 
 function blankToNull(value: string | undefined): string | null {

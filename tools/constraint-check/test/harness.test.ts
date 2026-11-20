@@ -37,7 +37,12 @@ describe("web dependencies", () => {
     const pkg = JSON.parse(readFileSync(join(root, "apps/web/package.json"), "utf8")) as {
       dependencies: Record<string, string>;
     };
-    expect(Object.keys(pkg.dependencies).sort()).toEqual(["@open-split/contracts", "react", "react-dom"]);
+    expect(Object.keys(pkg.dependencies).sort()).toEqual([
+      "@open-split/contracts",
+      "@open-split/core",
+      "react",
+      "react-dom",
+    ]);
   });
 });
 

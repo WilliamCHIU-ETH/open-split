@@ -1,8 +1,8 @@
 /**
- * Planned HTTP surface.
- * Slice labels follow docs/04. Slice 1 serves the equal-split ledger routes (they no longer return 501).
- * Adding an already signed-in member is also live. Virtual members, settlement preview, and recording a
- * settlement stay on later slices.
+ * HTTP surface.
+ * Slice labels follow docs/04. Expense routes started in slice 1 and now accept every split.
+ * Virtual members, claim, and joining by invite are slice 2. Recording a settlement stays on slice 3.
+ * The MCP transport for create_invite stays on slice 6; this list is the web API.
  */
 export const plannedHttpRoutes = [
   { method: "GET", path: "/health", slice: "0", summary: "存活檢查" },
@@ -19,9 +19,14 @@ export const plannedHttpRoutes = [
   { method: "POST", path: "/api/groups/:groupId/expenses/:expenseId/void", slice: "1", summary: "作廢一筆支出" },
   { method: "GET", path: "/api/groups/:groupId/balances", slice: "1", summary: "看即時餘額" },
   { method: "GET", path: "/api/groups/:groupId/activity", slice: "1", summary: "看活動紀錄" },
-  { method: "POST", path: "/api/groups/:groupId/members", slice: "1", summary: "加入已登入的成員" },
+  { method: "POST", path: "/api/groups/:groupId/members", slice: "2", summary: "加入成員或虛擬成員" },
+  { method: "POST", path: "/api/groups/:groupId/members/:memberId/claim-link", slice: "2", summary: "重新產生認領連結" },
+  { method: "GET", path: "/api/claims/:token", slice: "2", summary: "看要認領的成員" },
+  { method: "POST", path: "/api/claims/:token", slice: "2", summary: "認領虛擬成員" },
+  { method: "POST", path: "/api/groups/:groupId/invites", slice: "2", summary: "建立邀請連結" },
+  { method: "GET", path: "/api/invites/:token", slice: "2", summary: "看邀請連結" },
+  { method: "POST", path: "/api/invites/:token/accept", slice: "2", summary: "用邀請連結加入群組" },
   { method: "POST", path: "/api/groups/:groupId/settlements", slice: "3", summary: "記錄結清" },
-  { method: "POST", path: "/api/groups/:groupId/invites", slice: "6", summary: "建立邀請連結" },
 ] as const;
 
 export type PlannedHttpRoute = (typeof plannedHttpRoutes)[number];

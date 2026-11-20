@@ -15,8 +15,9 @@ export interface Session {
 export interface MemberRecord {
   readonly id: string;
   readonly name: string;
-  readonly virtual: boolean;
-  readonly subject: string | null;
+  virtual: boolean;
+  subject: string | null;
+  claimToken?: string | null;
 }
 
 export interface ExpenseRecord {

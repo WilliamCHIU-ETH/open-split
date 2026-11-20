@@ -93,12 +93,23 @@ describe("driver", () => {
     expect(output.exitCode, output.stderr).toBe(0);
     expect(output.stdout).toContain("login.subject: dev-line:alice");
     expect(output.stdout).toContain("login.subject: dev-google:bob");
+    expect(output.stdout).toContain("login.subject: dev-line:kenji");
     expect(output.stdout).toContain("member_virtual: false");
-    expect(output.stdout).not.toContain("member_virtual: true");
+    expect(output.stdout).toContain("member_virtual: true");
+    expect(output.stdout).toContain("activity: member.virtual_created");
+    expect(output.stdout).toContain("expense_split: exact");
+    expect(output.stdout).toContain("expense_split: percentage");
+    expect(output.stdout).toContain("expense_split: shares");
+    expect(output.stdout).toContain("expense_participants: 2");
     expect(output.stdout).toContain("expense_updated:");
     expect(output.stdout).toContain("expense_voided:");
     expect(output.stdout).toContain("invariant.shares_sum_to_amount: pass");
     expect(output.stdout).toContain("invariant.balances_sum_to_zero: pass");
+    expect(output.stdout).toContain("invariant.balances_match_splits: pass");
+    expect(output.stdout).toContain("invariant.claim_keeps_member_id: pass");
+    expect(output.stdout).toContain("invariant.claim_keeps_shares: pass");
+    expect(output.stdout).toContain("activity: member.claimed");
+    expect(output.stdout).toContain("join.already_member: false");
     expect(output.stdout).toContain("invariant.transfer_bound: pass");
     expect(output.stdout).toContain("invariant.settled_to_zero: pass");
     expect(output.stdout).toContain("invite_path: /invite/");
@@ -136,7 +147,13 @@ describe("driver", () => {
     expect(output.stdout).not.toContain("group_id: grp_old");
 
     const saved = JSON.parse(await readFile(statePath, "utf8")) as {
-      groups: { id: string; currency: string; expenses: unknown[]; invites: unknown[]; members: unknown[] }[];
+      groups: {
+        id: string;
+        currency: string;
+        expenses: unknown[];
+        invites: unknown[];
+        members: { name: string; virtual: boolean }[];
+      }[];
     };
     const oldGroup = saved.groups.find((group) => group.id === "grp_old");
     const created = saved.groups.find((group) => group.id !== "grp_old");
@@ -144,9 +161,10 @@ describe("driver", () => {
     expect(oldGroup?.invites).toEqual([]);
     expect(oldGroup?.members).toHaveLength(1);
     expect(created?.currency).toBe("JPY");
-    expect(created?.members).toHaveLength(2);
-    expect(created?.expenses).toHaveLength(2);
+    expect(created?.members).toHaveLength(4);
+    expect(created?.expenses).toHaveLength(6);
     expect(created?.invites).toHaveLength(1);
+    expect(created?.members.some((member) => member.name === "店員" && member.virtual === false)).toBe(true);
   });
 
   it("signs bob in with the secondary Google provider", async () => {
@@ -171,51 +189,44 @@ describe("driver", () => {
     expect(output.stderr).toContain("AUTH_DEV_IDENTITIES");
   });
 
-  it("refuses an unequal split until slice 2", async () => {
+  it("records an exact split and a virtual member", async () => {
     const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
     directories.push(dir);
     const state = join(dir, "state.json");
     const login = await capture(["login", "--as", "alice", "--state", state]);
     expect(login.exitCode, login.stderr).toBe(0);
-    const group = await capture(["create-group", "--name", "拒絕對分", "--currency", "JPY", "--state", state]);
+    const group = await capture(["create-group", "--name", "不平均", "--currency", "JPY", "--state", state]);
     expect(group.exitCode, group.stderr).toBe(0);
-    const groupId = /group_id: (\S+)/.exec(group.stdout)?.[1];
-    const ownerId = /owner_member_id: (\S+)/.exec(group.stdout)?.[1];
+    const groupId = /group_id: (\S+)/.exec(group.stdout)?.[1] ?? "";
+    const ownerId = /owner_member_id: (\S+)/.exec(group.stdout)?.[1] ?? "";
+    const guest = await capture(["add-member", "--group", groupId, "--name", "店員", "--virtual", "--state", state]);
+    expect(guest.exitCode, guest.stderr).toBe(0);
+    expect(guest.stdout).toContain("member_virtual: true");
+    expect(guest.stdout).toContain("claim_path: /claim/");
+    const guestId = /member_id: (\S+)/.exec(guest.stdout)?.[1] ?? "";
     const output = await capture([
       "add-expense",
       "--group",
-      groupId ?? "",
+      groupId,
       "--payer",
-      ownerId ?? "",
+      ownerId,
       "--amount",
       "3000",
       "--currency",
       "JPY",
       "--participants",
-      ownerId ?? "",
+      `${ownerId},${guestId}`,
       "--split",
       "exact",
       "--amounts",
-      `${ownerId ?? ""}=3000`,
+      `${ownerId}=1000,${guestId}=2000`,
       "--state",
       state,
     ]);
-    expect(output.exitCode).not.toBe(0);
-    expect(output.stderr).toContain("切片 2");
-  });
-
-  it("refuses a virtual member until slice 2", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
-    directories.push(dir);
-    const state = join(dir, "state.json");
-    const login = await capture(["login", "--as", "alice", "--state", state]);
-    expect(login.exitCode, login.stderr).toBe(0);
-    const group = await capture(["create-group", "--name", "拒絕虛擬", "--currency", "TWD", "--state", state]);
-    expect(group.exitCode, group.stderr).toBe(0);
-    const groupId = /group_id: (\S+)/.exec(group.stdout)?.[1] ?? "";
-    const output = await capture(["add-member", "--group", groupId, "--name", "店員", "--virtual", "--state", state]);
-    expect(output.exitCode).not.toBe(0);
-    expect(output.stderr).toContain("切片 2");
+    expect(output.exitCode, output.stderr).toBe(0);
+    expect(output.stdout).toContain("expense_split: exact");
+    expect(output.stdout).toContain("invariant.shares_sum_to_amount: pass");
+    expect(output.stdout).toContain("invariant.balances_match_splits: pass");
   });
 
   it("prints the dinner story without a state file", async () => {

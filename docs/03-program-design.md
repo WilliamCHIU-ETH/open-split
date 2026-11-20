@@ -26,7 +26,7 @@
 | `oauth_authorization_codes` | 授權碼與 PKCE，只存雜湊 |
 | `oauth_access_tokens` | 存取權杖雜湊 |
 
-遷移從切片 1 開始，按那一片需要的表加。切片 1 的遷移含使用者、工作階段、群組、成員、支出、份額、活動紀錄與邀請。結清與 OAuth 的表仍只在 schema，還沒有查詢。
+遷移從切片 1 開始，按那一片需要的表加。切片 1 的遷移含使用者、工作階段、群組、成員、支出、份額、活動紀錄與邀請。切片 2 給支出加上 `split_json`（空著代表切片 1 的平均分），並用認領權杖的雜湊找虛擬成員。餘額仍用存下來的份額，不在查詢時重算另一套分法。結清與 OAuth 的表仍只在 schema，還沒有查詢。
 
 ## 帳本核心
 
@@ -118,7 +118,7 @@ function transferBound(participantCount: number): number;
 }
 ```
 
-HTTP 路徑的預定清單在 `plannedHttpRoutes`。切片 1 的群組、平均分支出、餘額與活動紀錄不再回 501。記錄結清仍回 501。
+HTTP 路徑的預定清單在 `plannedHttpRoutes`。切片 1 的群組、支出、餘額與活動紀錄不再回 501。切片 2 起，同一批支出路徑接受指定金額、百分比與份數；虛擬成員、認領與用邀請連結加入也走 HTTP。MCP 的 `create_invite` 仍標切片 6，因為工具傳輸那時才有。記錄結清仍回 501。
 
 ## 登入介面
 
@@ -154,4 +154,4 @@ function auditWranglerConfig(config: unknown): readonly {
 
 ## 還沒做
 
-OAuth、MCP 傳輸、LIFF SDK、Flex Message、官方帳號 push、不平均分法、多幣別、結清寫入、邀請認領。切片順序見 [04](04-vertical-slices.md)。
+OAuth、MCP 傳輸、LIFF SDK、Flex Message、官方帳號 push、多幣別、結清寫入。切片順序見 [04](04-vertical-slices.md)。

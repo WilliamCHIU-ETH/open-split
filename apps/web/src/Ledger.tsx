@@ -1,24 +1,11 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
-import type {
-  ActivityResult,
-  BalancesResult,
-  CurrentSession,
-  DevUser,
-  ExpenseView,
-  GroupDetail,
-} from "@open-split/contracts";
+import { useEffect, useId, useState } from "react";
+import type { ActivityResult, BalancesResult, CurrentSession, DevUser, ExpenseView, GroupDetail } from "@open-split/contracts";
 import { ApiError, api, type ExpenseDraft } from "./api.ts";
+import { CopyLink } from "./copy-link.tsx";
 import { Dialog } from "./Dialog.tsx";
-import { formatMoney, formatWhen, netLabel, netTone } from "./format.ts";
-
-interface ExpenseForm {
-  readonly expenseId: string | null;
-  readonly amount: string;
-  readonly payerId: string;
-  readonly participantIds: readonly string[];
-  readonly category: string;
-  readonly note: string;
-}
+import { ExpenseForm, type ExpenseFormState } from "./ExpenseForm.tsx";
+import { formatMoney, formatWhen, memberStatus, netLabel, netTone, splitLabel } from "./format.ts";
+import { MemberDialog } from "./MemberDialog.tsx";
 
 export function Ledger({
   groupId,
@@ -29,15 +16,17 @@ export function Ledger({
   session: CurrentSession;
   onUnauthorized: () => void;
 }) {
+  const claimTitleId = useId();
   const [detail, setDetail] = useState<GroupDetail | null>(null);
   const [balances, setBalances] = useState<BalancesResult | null>(null);
   const [activity, setActivity] = useState<ActivityResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
-  const [expenseForm, setExpenseForm] = useState<ExpenseForm | null>(null);
+  const [expenseForm, setExpenseForm] = useState<ExpenseFormState | null>(null);
   const [memberOpen, setMemberOpen] = useState(false);
   const [voidTarget, setVoidTarget] = useState<ExpenseView | null>(null);
+  const [claimLink, setClaimLink] = useState<{ name: string; url: string } | null>(null);
   const [directory, setDirectory] = useState<DevUser[] | null>(null);
 
   useEffect(() => {
@@ -93,6 +82,7 @@ export function Ledger({
       participantIds: detail.members.map((member) => member.id),
       category: "",
       note: "",
+      split: { type: "equal" },
     });
   }
 
@@ -104,6 +94,7 @@ export function Ledger({
       participantIds: expense.participantIds,
       category: expense.category ?? "",
       note: expense.note ?? "",
+      split: expense.split,
     });
   }
 
@@ -123,6 +114,17 @@ export function Ledger({
       refresh("已作廢這筆帳。餘額已重算。");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "沒有作廢。");
+    }
+  }
+
+  async function rotateClaim(memberId: string, name: string) {
+    setError(null);
+    try {
+      const grant = await api.rotateClaim(groupId, memberId);
+      setClaimLink({ name, url: new URL(grant.claimPath, window.location.origin).href });
+      setRevision((value) => value + 1);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "沒有產生認領連結。");
     }
   }
 
@@ -156,7 +158,7 @@ export function Ledger({
                   <li key={member.id} className={`card tone-${tone}`}>
                     <p className="font-semibold">
                       {member.displayName}
-                      {member.virtual ? <span className="ms-2 text-sm">虛擬成員</span> : null}
+                      <span className="badge">{memberStatus(member)}</span>
                     </p>
                     <p>
                       <span className="text-sm">{netLabel(tone)}</span>{" "}
@@ -174,47 +176,52 @@ export function Ledger({
 
           <section aria-labelledby="expenses-title" className="mt-8">
             <h2 id="expenses-title">支出</h2>
-            {detail.expenses.length === 0 ? <p>還沒有支出。記一筆平均分帳。</p> : null}
+            {detail.expenses.length === 0 ? <p>還沒有支出。可以平均，也可以指定金額、百分比或份數。</p> : null}
             <ul className="stack mt-3">
-              {detail.expenses.map((expense) => (
-                <li key={expense.id} className="card">
-                  <article aria-labelledby={`expense-${expense.id}`}>
-                    <div className="flex items-start justify-between gap-3">
-                      <h3 id={`expense-${expense.id}`} className={expense.voided ? "line-through" : undefined}>
-                        {expense.category ?? "支出"}
-                        {expense.voided ? "，已作廢" : ""}
-                      </h3>
-                      <p className={`money text-xl ${expense.voided ? "line-through" : ""}`}>
-                        {formatMoney(expense.amount, expense.currency)}
-                      </p>
-                    </div>
-                    <p>
-                      {names.get(expense.payerId) ?? "成員"} 先付，平均分給 {String(expense.participantIds.length)} 人
-                    </p>
-                    {expense.note ? <p>{expense.note}</p> : null}
-                    <ul className="stack mt-2 text-sm text-muted">
-                      {expense.shares.map((share) => (
-                        <li key={share.participantId}>
-                          {names.get(share.participantId) ?? share.participantId}{" "}
-                          {formatMoney(share.amount, expense.currency)}
-                        </li>
-                      ))}
-                    </ul>
-                    {expense.voided ? null : (
-                      <div className="mt-3 flex gap-2">
-                        <button type="button" className="secondary" onClick={() => openEdit(expense)}>
-                          修改
-                          <span className="visually-hidden"> {expense.category ?? "這筆支出"}</span>
-                        </button>
-                        <button type="button" className="danger" onClick={() => setVoidTarget(expense)}>
-                          作廢
-                          <span className="visually-hidden"> {expense.category ?? "這筆支出"}</span>
-                        </button>
+              {detail.expenses.map((expense) => {
+                const excluded = detail.members.filter((member) => !expense.participantIds.includes(member.id));
+                return (
+                  <li key={expense.id} className="card">
+                    <article aria-labelledby={`expense-${expense.id}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <h3 id={`expense-${expense.id}`} className={expense.voided ? "line-through" : undefined}>
+                          {expense.category ?? "支出"}
+                          {expense.voided ? "，已作廢" : ""}
+                        </h3>
+                        <p className={`money text-xl ${expense.voided ? "line-through" : ""}`}>
+                          {formatMoney(expense.amount, expense.currency)}
+                        </p>
                       </div>
-                    )}
-                  </article>
-                </li>
-              ))}
+                      <p>
+                        {names.get(expense.payerId) ?? "成員"} 先付，{splitLabel(expense.split.type)}，
+                        {String(expense.participantIds.length)} 人
+                      </p>
+                      {excluded.length > 0 ? <p>{excluded.map((member) => member.displayName).join("、")}沒有分攤</p> : null}
+                      {expense.note ? <p>{expense.note}</p> : null}
+                      <ul className="stack mt-2 text-sm text-muted">
+                        {expense.shares.map((share) => (
+                          <li key={share.participantId} className="share-line">
+                            <span>{names.get(share.participantId) ?? share.participantId}</span>
+                            <span className="money">{formatMoney(share.amount, expense.currency)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      {expense.voided ? null : (
+                        <div className="mt-3 flex gap-2">
+                          <button type="button" className="secondary" onClick={() => openEdit(expense)}>
+                            修改
+                            <span className="visually-hidden"> {expense.category ?? "這筆支出"}</span>
+                          </button>
+                          <button type="button" className="danger" onClick={() => setVoidTarget(expense)}>
+                            作廢
+                            <span className="visually-hidden"> {expense.category ?? "這筆支出"}</span>
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  </li>
+                );
+              })}
             </ul>
           </section>
 
@@ -223,16 +230,25 @@ export function Ledger({
             <ul className="stack mt-3">
               {detail.members.map((member) => (
                 <li key={member.id} className="card">
-                  <span className="font-semibold">{member.displayName}</span>
-                  <span className="ms-2 text-sm text-muted">
-                    {member.role === "owner" ? "擁有者" : "成員"}
-                    {member.virtual ? " · 虛擬成員" : " · 已登入"}
-                  </span>
+                  <p>
+                    <span className="font-semibold">{member.displayName}</span>
+                    <span className="badge">{memberStatus(member)}</span>
+                  </p>
+                  {member.virtual ? (
+                    <button
+                      type="button"
+                      className="secondary mt-3"
+                      onClick={() => void rotateClaim(member.id, member.displayName)}
+                    >
+                      再給一次認領連結
+                      <span className="visually-hidden">，給{member.displayName}</span>
+                    </button>
+                  ) : null}
                 </li>
               ))}
             </ul>
-            <button type="button" className="secondary mt-3" onClick={() => setMemberOpen(true)}>
-              加入成員
+            <button type="button" className="mt-3" onClick={() => setMemberOpen(true)}>
+              加人
             </button>
           </section>
 
@@ -258,28 +274,41 @@ export function Ledger({
         </button>
       </div>
 
-      <ExpenseDialog
-        form={expenseForm}
-        detail={detail}
-        onClose={() => setExpenseForm(null)}
-        onSave={saveExpense}
-      />
+      <ExpenseForm form={expenseForm} detail={detail} onClose={() => setExpenseForm(null)} onSave={saveExpense} />
       <MemberDialog
         open={memberOpen}
         groupId={groupId}
         members={detail?.members ?? []}
         directory={directory}
         onClose={() => setMemberOpen(false)}
-        onAdded={() => {
+        onChanged={(message) => {
           setMemberOpen(false);
-          refresh("已加入成員。");
+          refresh(message);
         }}
       />
+      <Dialog open={claimLink !== null} labelledBy={claimTitleId} onClose={() => setClaimLink(null)}>
+        {claimLink ? (
+          <div className="dialog-body">
+            <h2 id={claimTitleId}>給{claimLink.name}的認領連結</h2>
+            <p>舊的連結已經失效。他認領的仍是同一個位置。</p>
+            <CopyLink value={claimLink.url} label="認領連結" />
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setClaimLink(null)}>
+                完成
+              </button>
+            </div>
+          </div>
+        ) : (
+          <h2 id={claimTitleId}>認領連結</h2>
+        )}
+      </Dialog>
       <Dialog open={voidTarget !== null} labelledBy="void-title" onClose={(value) => void confirmVoid(value)}>
         <form method="dialog">
           <h2 id="void-title">作廢這筆帳？</h2>
           <p>
-            {voidTarget ? `${voidTarget.category ?? "這筆支出"} ${formatMoney(voidTarget.amount, voidTarget.currency)}` : ""}
+            {voidTarget
+              ? `${voidTarget.category ?? "這筆支出"} ${formatMoney(voidTarget.amount, voidTarget.currency)}`
+              : ""}
             。作廢後不再計入餘額，活動紀錄會留下。
           </p>
           <div className="dialog-actions">
@@ -295,231 +324,5 @@ export function Ledger({
         </form>
       </Dialog>
     </div>
-  );
-}
-
-function ExpenseDialog({
-  form,
-  detail,
-  onClose,
-  onSave,
-}: {
-  form: ExpenseForm | null;
-  detail: GroupDetail | null;
-  onClose: () => void;
-  onSave: (draft: ExpenseDraft, expenseId: string | null) => Promise<void>;
-}) {
-  const headingId = useId();
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const editing = form?.expenseId !== null && form?.expenseId !== undefined;
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!form || !detail) return;
-    const data = new FormData(event.currentTarget);
-    const participantIds = data.getAll("participant").map(String);
-    const first = event.currentTarget.querySelector<HTMLInputElement>('input[name="participant"]');
-    if (participantIds.length === 0) {
-      first?.setCustomValidity("至少要有一個人分攤。");
-      first?.reportValidity();
-      return;
-    }
-    first?.setCustomValidity("");
-    const category = String(data.get("category") ?? "").trim();
-    const note = String(data.get("note") ?? "").trim();
-    const draft: ExpenseDraft = {
-      groupId: detail.group.id,
-      payerId: String(data.get("payer") ?? ""),
-      amount: String(data.get("amount") ?? ""),
-      currency: detail.group.defaultCurrency,
-      participantIds,
-      ...(category ? { category } : {}),
-      ...(note ? { note } : {}),
-    };
-    setPending(true);
-    setError(null);
-    try {
-      await onSave(draft, form.expenseId);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "沒有存成。");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  return (
-    <Dialog open={form !== null} labelledBy={headingId} onClose={onClose}>
-      {form && detail ? (
-        <form key={form.expenseId ?? "new"} aria-labelledby={headingId} onSubmit={(event) => void onSubmit(event)}>
-          <h2 id={headingId}>{editing ? "修改支出" : "記一筆"}</h2>
-          <p className="text-sm text-muted">平均分。幣別是 {detail.group.defaultCurrency}，填整數最小單位。</p>
-          <div className="field">
-            <label htmlFor="expense-amount">
-              金額 <span aria-hidden="true">*</span>
-            </label>
-            <input
-              id="expense-amount"
-              name="amount"
-              inputMode="numeric"
-              autoComplete="off"
-              required
-              pattern="^(0|[1-9][0-9]*)$"
-              defaultValue={form.amount}
-              enterKeyHint="next"
-              onInput={(event) => event.currentTarget.setCustomValidity("")}
-              onInvalid={(event) => {
-                const input = event.currentTarget;
-                input.setCustomValidity(
-                  input.validity.valueMissing ? "請填金額。" : "金額要是整數，不能有小數點或前導零。",
-                );
-              }}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="expense-payer">誰先付</label>
-            <select id="expense-payer" name="payer" defaultValue={form.payerId} required>
-              {detail.members.map((member) => (
-                <option key={member.id} value={member.id}>
-                  {member.displayName}
-                </option>
-              ))}
-            </select>
-          </div>
-          <fieldset className="field">
-            <legend>
-              誰要分攤 <span aria-hidden="true">*</span>
-            </legend>
-            {detail.members.map((member) => (
-              <label key={member.id} className="choice" htmlFor={`part-${member.id}`}>
-                <input
-                  id={`part-${member.id}`}
-                  type="checkbox"
-                  name="participant"
-                  value={member.id}
-                  defaultChecked={form.participantIds.includes(member.id)}
-                  onChange={(event) => {
-                    event.currentTarget.form
-                      ?.querySelectorAll<HTMLInputElement>('input[name="participant"]')
-                      .forEach((box) => box.setCustomValidity(""));
-                  }}
-                />
-                {member.displayName}
-              </label>
-            ))}
-          </fieldset>
-          <div className="field">
-            <label htmlFor="expense-category">分類</label>
-            <input id="expense-category" name="category" maxLength={40} defaultValue={form.category} enterKeyHint="next" />
-          </div>
-          <div className="field">
-            <label htmlFor="expense-note">備註</label>
-            <textarea id="expense-note" name="note" maxLength={500} defaultValue={form.note} />
-          </div>
-          {error ? (
-            <p role="alert" tabIndex={-1}>
-              {error}
-            </p>
-          ) : null}
-          <div className="dialog-actions">
-            <button type="button" className="secondary" onClick={onClose}>
-              取消
-            </button>
-            <button type="submit" disabled={pending}>
-              {pending ? "儲存中" : editing ? "儲存修改" : "記帳"}
-            </button>
-          </div>
-        </form>
-      ) : (
-        <h2 id={headingId}>記一筆</h2>
-      )}
-    </Dialog>
-  );
-}
-
-function MemberDialog({
-  open,
-  groupId,
-  members,
-  directory,
-  onClose,
-  onAdded,
-}: {
-  open: boolean;
-  groupId: string;
-  members: GroupDetail["members"];
-  directory: DevUser[] | null;
-  onClose: () => void;
-  onAdded: () => void;
-}) {
-  const headingId = useId();
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const taken = new Set(members.map((member) => member.userId).filter((id): id is string => id !== null));
-  const available = (directory ?? []).filter((user) => !taken.has(user.userId));
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const userId = String(data.get("userId") ?? "");
-    const user = available.find((item) => item.userId === userId);
-    setPending(true);
-    setError(null);
-    try {
-      await api.addMember(groupId, {
-        displayName: user?.displayName ?? "成員",
-        virtual: false,
-        userId,
-      });
-      onAdded();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "沒有加入。");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  return (
-    <Dialog
-      open={open}
-      labelledBy={headingId}
-      onClose={() => {
-        setError(null);
-        onClose();
-      }}
-    >
-      <form aria-labelledby={headingId} onSubmit={(event) => void onSubmit(event)}>
-        <h2 id={headingId}>加入已登入的成員</h2>
-        <p id="member-user-help" className="text-sm text-muted">
-          還沒註冊的朋友要等切片 2 才能先記成虛擬成員。
-        </p>
-        <div className="field">
-          <label htmlFor="member-user">
-            選擇的人 <span aria-hidden="true">*</span>
-          </label>
-          {available.length === 0 ? <p>還沒有其他人登入過。請先用另一個名稱登入，再回來加入。</p> : null}
-          <select id="member-user" name="userId" required aria-describedby="member-user-help">
-            {available.map((user) => (
-              <option key={user.userId} value={user.userId}>
-                {user.displayName}（{user.provider === "line" ? "LINE" : "Google"}）
-              </option>
-            ))}
-          </select>
-        </div>
-        {error ? (
-          <p role="alert" tabIndex={-1}>
-            {error}
-          </p>
-        ) : null}
-        <div className="dialog-actions">
-          <button type="button" className="secondary" onClick={onClose}>
-            取消
-          </button>
-          <button type="submit" disabled={pending}>
-            {pending ? "加入中" : "加入"}
-          </button>
-        </div>
-      </form>
-    </Dialog>
   );
 }

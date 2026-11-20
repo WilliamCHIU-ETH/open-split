@@ -15,6 +15,7 @@ export const memberSchema = z.strictObject({
   userId: idSchema.nullable(),
   role: z.enum(["owner", "member"]),
   virtual: z.boolean(),
+  claimedAt: z.string().min(1).nullable(),
 });
 
 export const addMemberInputSchema = z

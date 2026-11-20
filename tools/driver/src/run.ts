@@ -8,16 +8,19 @@ import {
   type AuthProviderId,
 } from "@open-split/auth";
 import {
+  activityResultSchema,
+  addMemberResultSchema,
   balancesResultSchema,
+  claimResultSchema,
   createGroupResultSchema,
+  currentSessionSchema,
   devSessionSchema,
   devUserListSchema,
   expenseInputSchema,
   expenseResultSchema,
   groupDetailSchema,
-  currentSessionSchema,
   inviteResultSchema,
-  memberSchema,
+  joinResultSchema,
   parseSignedMinor,
   parseUnsignedMinor,
   voidExpenseResultSchema,
@@ -34,7 +37,9 @@ import {
   sumMinor,
   toMinorUnits,
   transferBound,
+  type Minor,
   type NetBalance,
+  type SplitSpec,
 } from "@open-split/core";
 import { apiRequest } from "./api.ts";
 import { rejectUnknown, requireOption, takeFlag, takeOption } from "./args.ts";
@@ -51,20 +56,21 @@ const HELP = `open-split-driver 打本機 Worker（預設 http://127.0.0.1:8787�
   login --as <name> [--provider line|google] [--environment development]
   whoami
   create-group --name <name> [--currency TWD]
-  add-member --group <id> --name <name> --user <userId>
-  add-expense --group <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--split equal] [--category <text>] [--note <text>]
-  update-expense --group <id> --expense <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--category <text>] [--note <text>]
+  add-member --group <id> --name <name> (--user <userId> | --virtual)
+  add-expense --group <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--split equal|exact|percentage|shares] [--amounts id=minor,id=minor] [--basis-points id=bp,id=bp] [--weights id=n,id=n] [--category <text>] [--note <text>]
+  update-expense --group <id> --expense <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--split equal|exact|percentage|shares] [--amounts id=minor,id=minor] [--basis-points id=bp,id=bp] [--weights id=n,id=n] [--category <text>] [--note <text>]
   void-expense --group <id> --expense <id>
   show-balances --group <id>
   settle --group <id>
   share-link --group <id>
+  claim --token <token>
+  join --token <token>
   demo
   accept
 
-金額一律是整數最小貨幣單位。alice 與 bob 是穩定的假身份。
+金額一律是整數最小貨幣單位。百分比用基點，100% 是 10000。alice 與 bob 是穩定的假身份。
 狀態檔只記工作階段與這次建立的 id，帳本在 D1。預設是 ./.open-split-driver/state.json。
-accept 會跑：bob 與 alice 登入 → 建群 → 加入已登入的 bob → 平均分帳 → 修改 → 作廢另一筆 → 餘額，再用核心印結清方案 → 邀請連結。
-虛擬成員、指定金額、百分比、份數會被 Worker 拒絕，那是切片 2。結清只印方案，不寫入。`;
+accept 會跑：登入 → 建群 → 平均分 → 修改 → 作廢 → 虛擬成員 → 指定金額、百分比、份數、排除某人 → 認領同一位成員 → 用邀請連結加入。結清只印方案，不寫入。`;
 
 export async function run(argv: readonly string[], io: DriverIo): Promise<number> {
   try {
@@ -195,6 +201,112 @@ async function runAccept(io: DriverIo, statePath: string): Promise<void> {
   await dispatch(["show-balances", "--group", group.id], state, io);
   await dispatch(["settle", "--group", group.id], state, io);
   await dispatch(["share-link", "--group", group.id], state, io);
+  const beforeGuest = new Set(group.members.map((member) => member.id));
+  await dispatch(["add-member", "--group", group.id, "--name", "店員", "--virtual"], state, io);
+  const guest = group.members.find((member) => !beforeGuest.has(member.id));
+  if (!guest?.claimToken) throw new DriverFailure(2, "accept 沒有建立虛擬成員的認領權杖。");
+  const everyone = `${owner.id},${bobMember.id},${guest.id}`;
+  const withoutGuest = `${owner.id},${bobMember.id}`;
+  await dispatch(
+    [
+      "add-expense",
+      "--group",
+      group.id,
+      "--payer",
+      owner.id,
+      "--amount",
+      "600",
+      "--currency",
+      "JPY",
+      "--participants",
+      everyone,
+      "--split",
+      "exact",
+      "--amounts",
+      `${owner.id}=100,${bobMember.id}=200,${guest.id}=300`,
+      "--category",
+      "點心",
+    ],
+    state,
+    io,
+  );
+  await dispatch(
+    [
+      "add-expense",
+      "--group",
+      group.id,
+      "--payer",
+      bobMember.id,
+      "--amount",
+      "1000",
+      "--currency",
+      "JPY",
+      "--participants",
+      everyone,
+      "--split",
+      "percentage",
+      "--basis-points",
+      `${owner.id}=5000,${bobMember.id}=3000,${guest.id}=2000`,
+      "--category",
+      "門票",
+    ],
+    state,
+    io,
+  );
+  await dispatch(
+    [
+      "add-expense",
+      "--group",
+      group.id,
+      "--payer",
+      owner.id,
+      "--amount",
+      "1001",
+      "--currency",
+      "JPY",
+      "--participants",
+      everyone,
+      "--split",
+      "shares",
+      "--weights",
+      `${owner.id}=1,${bobMember.id}=1,${guest.id}=2`,
+      "--category",
+      "計程車",
+    ],
+    state,
+    io,
+  );
+  await dispatch(
+    [
+      "add-expense",
+      "--group",
+      group.id,
+      "--payer",
+      owner.id,
+      "--amount",
+      "800",
+      "--currency",
+      "JPY",
+      "--participants",
+      withoutGuest,
+      "--split",
+      "equal",
+      "--category",
+      "甜點",
+      "--note",
+      "店員沒有吃",
+    ],
+    state,
+    io,
+  );
+  const invite = group.invites.at(-1);
+  if (!invite) throw new DriverFailure(2, "accept 沒有邀請連結。");
+  await dispatch(["login", "--as", "kenji"], state, io);
+  await dispatch(["claim", "--token", guest.claimToken], state, io);
+  await dispatch(["login", "--as", "chao"], state, io);
+  await dispatch(["join", "--token", invite.token], state, io);
+  await dispatch(["show-balances", "--group", group.id], state, io);
+  await dispatch(["settle", "--group", group.id], state, io);
   await saveState(statePath, state);
   io.stdout(`state: ${statePath}`);
 }
@@ -233,6 +345,10 @@ async function dispatch(
       return settle(args, state, io);
     case "share-link":
       return shareLink(args, state, io);
+    case "claim":
+      return claimMember(args, state, io);
+    case "join":
+      return joinGroup(args, state, io);
     default:
       throw new DriverFailure(1, `不認識的指令 ${command}。執行時加上 help 可看指令形狀。`);
   }
@@ -309,6 +425,7 @@ async function createGroup(args: readonly string[], state: DriverState, io: Driv
       name: member.displayName,
       virtual: member.virtual,
       subject: member.userId === session.userId ? session.subject : null,
+      claimToken: null,
     })),
     expenses: [],
     invites: [],
@@ -329,11 +446,11 @@ async function addMember(args: readonly string[], state: DriverState, io: Driver
   const group = requireGroup(state, requireOption(groupFlag.value, "group"));
   const name = requireOption(nameFlag.value, "name");
   if (virtualFlag.present && userFlag.value) throw new DriverFailure(1, "虛擬成員不能同時給 --user。");
-  if (!userFlag.value) {
-    throw new DriverFailure(1, "請用 --user 連結已登入的人。虛擬成員是切片 2。");
+  if (!virtualFlag.present && !userFlag.value) {
+    throw new DriverFailure(1, "請用 --user 連結已登入的人，或加 --virtual 先記一個還沒註冊的朋友。");
   }
   const member = parseResponse(
-    memberSchema,
+    addMemberResultSchema,
     await apiRequest(session.token, `/api/groups/${group.id}/members`, {
       method: "POST",
       body: {
@@ -349,10 +466,20 @@ async function addMember(args: readonly string[], state: DriverState, io: Driver
     const directory = parseResponse(devUserListSchema, await apiRequest(session.token, "/api/dev/users"), "使用者");
     subject = directory.users.find((user) => user.userId === userFlag.value)?.subject ?? null;
   }
-  group.members.push({ id: member.id, name: member.displayName, virtual: member.virtual, subject });
+  group.members.push({
+    id: member.id,
+    name: member.displayName,
+    virtual: member.virtual,
+    subject,
+    claimToken: member.claim?.token ?? null,
+  });
   io.stdout(`member_id: ${member.id}`);
   io.stdout(`member_name: ${member.displayName}`);
   io.stdout(`member_virtual: ${member.virtual ? "true" : "false"}`);
+  if (member.claim) {
+    io.stdout(`claim_path: ${member.claim.claimPath}`);
+    io.stdout("activity: member.virtual_created");
+  }
 }
 
 async function addExpense(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
@@ -377,6 +504,7 @@ async function addExpense(args: readonly string[], state: DriverState, io: Drive
   io.stdout(`expense_amount_minor: ${parsed.body.amount}`);
   io.stdout(`expense_currency: ${parsed.body.currency}`);
   io.stdout(`expense_split: ${parsed.body.split.type}`);
+  io.stdout(`expense_participants: ${String(parsed.body.participantIds.length)}`);
   printShares(result.shares, parsed.body.amount, io);
   await printInvariants(session.token, group.id, io);
 }
@@ -410,6 +538,7 @@ async function updateExpense(args: readonly string[], state: DriverState, io: Dr
   io.stdout(`expense_amount_minor: ${parsed.body.amount}`);
   io.stdout(`expense_currency: ${parsed.body.currency}`);
   io.stdout(`expense_split: ${parsed.body.split.type}`);
+  io.stdout(`expense_participants: ${String(parsed.body.participantIds.length)}`);
   printShares(result.shares, parsed.body.amount, io);
   await printInvariants(session.token, group.id, io);
 }
@@ -480,6 +609,85 @@ async function shareLink(args: readonly string[], state: DriverState, io: Driver
   io.stdout("note: LIFF shareTargetPicker 與 Flex Message 屬於後續切片。這條指令只建立邀請連結，不送進 LINE 聊天。");
 }
 
+async function claimMember(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const session = requireSession(state);
+  const tokenFlag = takeOption(args, "token");
+  rejectUnknown(tokenFlag.rest);
+  const token = requireOption(tokenFlag.value, "token");
+  const result = parseResponse(
+    claimResultSchema,
+    await apiRequest(session.token, `/api/claims/${token}`, { method: "POST" }),
+    "認領",
+  );
+  const group = state.groups.find((item) => item.id === result.groupId);
+  const index = group?.members.findIndex((member) => member.id === result.member.id) ?? -1;
+  const previous = index >= 0 ? group?.members[index] : undefined;
+  if (group && index >= 0) {
+    group.members[index] = {
+      id: result.member.id,
+      name: result.member.displayName,
+      virtual: result.member.virtual,
+      subject: session.subject,
+      claimToken: null,
+    };
+  }
+  const detail = parseResponse(
+    groupDetailSchema,
+    await apiRequest(session.token, `/api/groups/${result.groupId}`),
+    "群組",
+  );
+  const sharesStay = detail.expenses.some((expense) =>
+    expense.shares.some((share) => share.participantId === result.member.id),
+  );
+  const activity = parseResponse(
+    activityResultSchema,
+    await apiRequest(session.token, `/api/groups/${result.groupId}/activity`),
+    "活動",
+  );
+  const claimed = activity.entries.find(
+    (entry) => entry.action === "member.claimed" && entry.entityId === result.member.id,
+  );
+  const samePerson = previous !== undefined && previous.id === result.member.id && result.member.virtual === false;
+  io.stdout(`claim.member_id: ${result.member.id}`);
+  io.stdout(`claim.group_id: ${result.groupId}`);
+  io.stdout(`claim.user_id: ${result.member.userId ?? ""}`);
+  io.stdout(`member_virtual: ${result.member.virtual ? "true" : "false"}`);
+  io.stdout(`activity: ${claimed?.action ?? "missing"}`);
+  io.stdout(`activity.claim: ${claimed?.summary ?? "missing"}`);
+  io.stdout(`invariant.claim_keeps_member_id: ${samePerson ? "pass" : "fail"}`);
+  io.stdout(`invariant.claim_keeps_shares: ${sharesStay ? "pass" : "fail"}`);
+  if (!samePerson) throw new DriverFailure(2, "認領改掛到別的成員。");
+  if (!sharesStay) throw new DriverFailure(2, "認領之後找不到原本的份額。");
+  if (!claimed) throw new DriverFailure(2, "活動紀錄沒有把認領和建立虛擬成員分開。");
+}
+
+async function joinGroup(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const session = requireSession(state);
+  const tokenFlag = takeOption(args, "token");
+  rejectUnknown(tokenFlag.rest);
+  const token = requireOption(tokenFlag.value, "token");
+  const result = parseResponse(
+    joinResultSchema,
+    await apiRequest(session.token, `/api/invites/${token}/accept`, { method: "POST" }),
+    "加入",
+  );
+  const group = state.groups.find((item) => item.id === result.groupId);
+  if (group && !group.members.some((member) => member.id === result.member.id)) {
+    group.members.push({
+      id: result.member.id,
+      name: result.member.displayName,
+      virtual: result.member.virtual,
+      subject: session.subject,
+      claimToken: null,
+    });
+  }
+  io.stdout(`join.member_id: ${result.member.id}`);
+  io.stdout(`join.group_id: ${result.groupId}`);
+  io.stdout(`join.already_member: ${result.alreadyMember ? "true" : "false"}`);
+  io.stdout(`member_virtual: ${result.member.virtual ? "true" : "false"}`);
+  io.stdout("activity: member.joined");
+}
+
 async function printInvariants(token: string, groupId: string, io: DriverIo) {
   const balances = parseResponse(
     balancesResultSchema,
@@ -491,6 +699,23 @@ async function printInvariants(token: string, groupId: string, io: DriverIo) {
   io.stdout(`balances_sum_minor: ${balances.sum}`);
   io.stdout(`invariant.balances_sum_to_zero: ${balances.sum === "0" ? "pass" : "fail"}`);
   if (balances.sum !== "0") throw new DriverFailure(2, "餘額總和不是 0。");
+  const detail = parseResponse(groupDetailSchema, await apiRequest(token, `/api/groups/${groupId}`), "群組");
+  const expected = computeBalances(
+    detail.expenses
+      .filter((expense) => !expense.voided)
+      .map((expense) => ({
+        payerId: expense.payerId,
+        amount: parseUnsignedMinor(expense.amount),
+        participantIds: expense.participantIds,
+        split: wireSplit(expense.split),
+      })),
+  );
+  const actual = new Map(balances.balances.map((row) => [row.participantId, row.net]));
+  const same =
+    expected.length === actual.size &&
+    expected.every((row) => actual.get(row.participantId) === formatMinor(row.net));
+  io.stdout(`invariant.balances_match_splits: ${same ? "pass" : "fail"}`);
+  if (!same) throw new DriverFailure(2, "餘額和這幾筆帳的分法不一致。");
   return balances;
 }
 
@@ -589,6 +814,15 @@ function parseResponse<T>(
     throw new DriverFailure(2, `${label} 不符合契約：${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
   }
   return parsed.data;
+}
+
+function wireSplit(split: SplitWire): SplitSpec {
+  if (split.type === "equal") return { type: "equal" };
+  if (split.type === "percentage") return { type: "percentage", basisPoints: split.basisPoints };
+  if (split.type === "shares") return { type: "shares", weights: split.weights };
+  const amounts: Record<string, Minor> = {};
+  for (const [id, value] of Object.entries(split.amounts)) amounts[id] = parseUnsignedMinor(value);
+  return { type: "exact", amounts };
 }
 
 function buildSplit(
