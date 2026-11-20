@@ -13,7 +13,7 @@
 
 **MCP 是另一條授權。** 外部代理人走 OAuth 2.1（授權碼與 PKCE）。除此之外還要：
 
-1. 該使用者的 `mcp_allowed` 為真（允許清單，預設關閉）。
+1. 該使用者的 `mcp_allowed` 為真，或已驗證的 Google Email 列於 `MCP_ALLOWED_EMAILS`（兩者皆預設關閉；授權細則見 [ADR-0007](0007-mcp-oauth-google-whitelist.md)）。
 2. 資料層確認他是目標群組的成員。工具不能只靠「猜對 group id」。
 
 用 LINE 或 Google 登入，不會打開 MCP。MCP 授權也不代替群組角色。

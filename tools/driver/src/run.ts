@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -33,15 +33,19 @@ import {
   settlementVoidResultSchema,
   settlementWriteSchema,
   voidExpenseResultSchema,
+  type FxRateWire,
   type SettlementWrite,
   type SplitWire,
 } from "@open-split/contracts";
 import {
+  allocateConvertedExpense,
   applyTransfers,
   balancesSum,
   computeBalances,
   formatMinor,
+  LedgerError,
   minor,
+  parseRateRatio,
   settledToZero,
   simplifyDebts,
   sumMinor,
@@ -51,7 +55,7 @@ import {
   type NetBalance,
   type SplitSpec,
 } from "@open-split/core";
-import { apiRequest, WorkerFailure } from "./api.ts";
+import { apiBase, apiRequest, WorkerFailure } from "./api.ts";
 import { rejectUnknown, requireOption, takeFlag, takeOption } from "./args.ts";
 import { DriverFailure } from "./failure.ts";
 import { emptyState, loadState, saveState, type DriverState, type ExpenseRecord, type GroupRecord, type Session } from "./state.ts";
@@ -67,8 +71,8 @@ const HELP = `open-split-driver 打本機 Worker（預設 http://127.0.0.1:8787�
   whoami
   create-group --name <name> [--currency TWD]
   add-member --group <id> --name <name> (--user <userId> | --virtual)
-  add-expense --group <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--split equal|exact|percentage|shares] [--amounts id=minor,id=minor] [--basis-points id=bp,id=bp] [--weights id=n,id=n] [--category <text>] [--note <text>]
-  update-expense --group <id> --expense <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--split equal|exact|percentage|shares] [--amounts id=minor,id=minor] [--basis-points id=bp,id=bp] [--weights id=n,id=n] [--category <text>] [--note <text>]
+  add-expense --group <id> --payer <memberId> --amount <minor> --currency <ISO> [--fx-rate <decimal|num/den>] --participants <id,id> [--split equal|exact|percentage|shares] [--amounts id=minor,id=minor] [--basis-points id=bp,id=bp] [--weights id=n,id=n] [--category <text>] [--note <text>]
+  update-expense --group <id> --expense <id> --payer <memberId> --amount <minor> --currency <ISO> [--fx-rate <decimal|num/den>] --participants <id,id> [--split equal|exact|percentage|shares] [--amounts id=minor,id=minor] [--basis-points id=bp,id=bp] [--weights id=n,id=n] [--category <text>] [--note <text>]
   void-expense --group <id> --expense <id>
   show-balances --group <id>
   settle --group <id> [--record]
@@ -83,9 +87,9 @@ const HELP = `open-split-driver 打本機 Worker（預設 http://127.0.0.1:8787�
   demo
   accept
 
-金額一律是整數最小貨幣單位。百分比用基點，100% 是 10000。alice 與 bob 是穩定的假身份。
+金額一律是 ISO 4217 整數最小貨幣單位（例如 1 TWD = 100、1 USD = 100、1 JPY = 1）。外幣支出需傳 --fx-rate（1 外幣 = ratio 群組主幣別）。百分比用基點，100% 是 10000。
 狀態檔只記工作階段與這次建立的 id，帳本在 D1。預設是 ./.open-split-driver/state.json。
-accept 會跑：登入 → 建群 → 平均分 → 修改 → 作廢 → 虛擬成員 → 指定金額、百分比、份數、排除某人 → 認領同一位成員 → 用邀請連結加入 → 收款方式 → 記錄與作廢部分結清 → 寫入結清方案 → 核對摘要。`;
+accept 會跑：切片 1–3（分帳、虛擬認領、邀請、結清）→ 切片 4（多幣別換算與主幣別結清）→ 切片 5（MCP OAuth 2.1 + 白名單 + R2 收據上傳驗證）。`;
 
 export async function run(argv: readonly string[], io: DriverIo): Promise<number> {
   try {
@@ -324,8 +328,476 @@ async function runAccept(io: DriverIo, statePath: string): Promise<void> {
   await dispatch(["show-balances", "--group", group.id], state, io);
   await dispatch(["settle", "--group", group.id], state, io);
   await acceptSettleUp(state, group.id, owner.id, alice, bob, io);
+  await acceptFx(io);
+  await acceptMcpOAuthAndReceipts(io);
   await saveState(statePath, state);
   io.stdout(`state: ${statePath}`);
+}
+
+async function acceptFx(io: DriverIo): Promise<void> {
+  io.stdout("# slice 4");
+  const fxState = emptyState();
+  await dispatch(["login", "--as", "bob", "--provider", "google"], fxState, io);
+  const bob = requireSession(fxState);
+  await dispatch(["login", "--as", "alice", "--provider", "line"], fxState, io);
+  const alice = requireSession(fxState);
+
+  await dispatch(["create-group", "--name", "台北多幣別", "--currency", "TWD"], fxState, io);
+  const fxGroup = fxState.groups.at(-1);
+  if (!fxGroup) throw new DriverFailure(2, "slice 4 沒有建立群組。");
+  const aliceMember = fxGroup.members.find((m) => m.subject === alice.subject);
+  if (!aliceMember) throw new DriverFailure(2, "slice 4 找不到群主成員。");
+
+  await dispatch(["add-member", "--group", fxGroup.id, "--name", "Bob", "--user", bob.userId], fxState, io);
+  const bobMember = fxGroup.members.find((m) => m.subject === bob.subject);
+  if (!bobMember) throw new DriverFailure(2, "slice 4 找不到 Bob 成員。");
+
+  const participants = `${aliceMember.id},${bobMember.id}`;
+  // 1001 JPY @ 0.21 -> 21021 minor TWD (NT$210.21)
+  await dispatch(
+    [
+      "add-expense",
+      "--group",
+      fxGroup.id,
+      "--payer",
+      aliceMember.id,
+      "--amount",
+      "1001",
+      "--currency",
+      "JPY",
+      "--fx-rate",
+      "0.21",
+      "--participants",
+      participants,
+      "--split",
+      "equal",
+      "--category",
+      "餐飲",
+    ],
+    fxState,
+    io,
+  );
+  // 12.50 USD (1250 minor) @ 31.5 -> 39375 minor TWD (exact split 500 + 750 -> 15750 + 23625)
+  await dispatch(
+    [
+      "add-expense",
+      "--group",
+      fxGroup.id,
+      "--payer",
+      bobMember.id,
+      "--amount",
+      "1250",
+      "--currency",
+      "USD",
+      "--fx-rate",
+      "31.5",
+      "--participants",
+      participants,
+      "--split",
+      "exact",
+      "--amounts",
+      `${aliceMember.id}=500,${bobMember.id}=750`,
+      "--category",
+      "住宿",
+    ],
+    fxState,
+    io,
+  );
+
+  const detail = parseResponse(
+    groupDetailSchema,
+    await apiRequest(alice.token, `/api/groups/${fxGroup.id}`),
+    "FX 群組",
+  );
+  const jpyExpense = detail.expenses.find((exp) => exp.currency === "JPY");
+  const usdExpense = detail.expenses.find((exp) => exp.currency === "USD");
+  const conversionOk =
+    jpyExpense?.convertedAmount === "21021" &&
+    jpyExpense.convertedCurrency === "TWD" &&
+    usdExpense?.convertedAmount === "39375" &&
+    usdExpense.convertedCurrency === "TWD";
+  assertCheck(io, "check.fx_conversion", conversionOk, "外幣折算主幣別金額不正確。");
+
+  const fxBalances = await printInvariants(alice.token, fxGroup.id, io);
+  assertCheck(
+    io,
+    "invariant.fx_balances_sum_to_zero",
+    fxBalances.sum === "0",
+    "多幣別群組餘額總和不是 0。",
+  );
+
+  // Same-currency expense with fxRate must be rejected (422)
+  await expectWorkerStatus(io, "check.fx_same_currency_rate_rejected", 422, () =>
+    apiRequest(alice.token, `/api/groups/${fxGroup.id}/expenses`, {
+      method: "POST",
+      body: {
+        groupId: fxGroup.id,
+        payerId: aliceMember.id,
+        amount: "1000",
+        currency: "TWD",
+        fxRate: { numerator: 1, denominator: 1 },
+        participantIds: [aliceMember.id, bobMember.id],
+        split: { type: "equal" },
+      },
+    }),
+  );
+
+  // Settlement in non-default currency must be rejected (422)
+  await expectWorkerStatus(io, "check.fx_settlement_currency_rejected", 422, () =>
+    postSettlement(
+      alice.token,
+      fxGroup.id,
+      {
+        fromMemberId: aliceMember.id,
+        toMemberId: bobMember.id,
+        amount: "100",
+        currency: "USD",
+      },
+      io,
+    ),
+  );
+
+  await dispatch(["settle", "--group", fxGroup.id, "--record"], fxState, io);
+  assertCheck(io, "check.fx_default_currency_settlement", true, "主幣別結清失敗。");
+
+  const activity = parseResponse(
+    activityResultSchema,
+    await apiRequest(alice.token, `/api/groups/${fxGroup.id}/activity`),
+    "FX 活動",
+  );
+  const actorAttributed = activity.entries.some(
+    (entry) => entry.action === "settlement.recorded" && entry.summary.includes("Alice"),
+  );
+  assertCheck(
+    io,
+    "check.activity.actor_attribution",
+    actorAttributed,
+    "活動紀錄缺少結清記錄人名稱（P2-3）。",
+  );
+}
+
+async function acceptMcpOAuthAndReceipts(io: DriverIo): Promise<void> {
+  io.stdout("# slice 5");
+  const base = apiBase();
+
+  // 1. OAuth protected-resource & authorization-server metadata
+  const prmRes = await fetch(`${base}/.well-known/oauth-protected-resource`);
+  const prmJson = (await prmRes.json()) as { resource?: string; authorization_servers?: string[] };
+  const asRes = await fetch(`${base}/.well-known/oauth-authorization-server`);
+  const asJson = (await asRes.json()) as {
+    authorization_endpoint?: string;
+    token_endpoint?: string;
+    registration_endpoint?: string;
+    scopes_supported?: string[];
+  };
+  const metadataOk =
+    prmRes.status === 200 &&
+    prmJson.resource === `${base}/mcp` &&
+    asRes.status === 200 &&
+    asJson.authorization_endpoint === `${base}/authorize` &&
+    asJson.token_endpoint === `${base}/oauth/token` &&
+    Boolean(asJson.scopes_supported?.includes("mcp:read")) &&
+    Boolean(asJson.scopes_supported?.includes("mcp:write"));
+  assertCheck(io, "check.mcp_oauth_metadata", metadataOk, "OAuth discovery metadata 不符合規範。");
+
+  // 2. Dynamic Client Registration + reject non-loopback HTTP redirect
+  const badDcr = await fetch(`${base}/oauth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_name: "Evil", redirect_uris: ["http://evil.example/cb"] }),
+  });
+  const redirectUri = "https://claude.ai/api/mcp/auth_callback";
+  const dcrRes = await fetch(`${base}/oauth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      client_name: "AcceptDriver",
+      redirect_uris: [redirectUri],
+      token_endpoint_auth_method: "none",
+    }),
+  });
+  const dcrJson = (await dcrRes.json()) as { client_id?: string };
+  assertCheck(
+    io,
+    "check.mcp_dcr",
+    badDcr.status === 400 && dcrRes.status === 201 && Boolean(dcrJson.client_id),
+    "MCP Dynamic Client Registration 驗證失敗。",
+  );
+  const clientId = dcrJson.client_id;
+  if (!clientId) throw new DriverFailure(2, "DCR 缺少 client_id。");
+
+  const runDevOAuth = async (devEmail: string, scopes: string[], targetClientId: string) => {
+    const verifier = `accept-verifier-${randomUUID()}-${randomUUID()}`;
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const authUrl = new URL(`${base}/authorize`);
+    authUrl.search = new URLSearchParams({
+      response_type: "code",
+      client_id: targetClientId,
+      redirect_uri: redirectUri,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state: `state-${randomUUID()}`,
+      scope: scopes.join(" "),
+      resource: `${base}/mcp`,
+    }).toString();
+
+    const consentGet = await fetch(authUrl.href);
+    if (consentGet.status !== 200) {
+      throw new DriverFailure(2, `GET /authorize 回傳 ${String(consentGet.status)}`);
+    }
+    const cookieHeader = consentGet.headers
+      .getSetCookie()
+      .map((item) => item.split(";")[0])
+      .join("; ");
+    const html = await consentGet.text();
+    const handle = /name="handle"\s+value="([^"]+)"/.exec(html)?.[1];
+    if (!handle) {
+      throw new DriverFailure(2, "GET /authorize 找不到 consent handle（請確認 WORKER 非 Google OIDC 模式或檢查 dev 設定）。");
+    }
+
+    const form = new URLSearchParams({
+      handle,
+      decision: "approve",
+      dev_email: devEmail,
+    });
+    for (const s of scopes) form.append("scope", s);
+
+    const consentPost = await fetch(`${base}/authorize`, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        Origin: base,
+        Cookie: cookieHeader,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: form.toString(),
+    });
+    if (consentPost.status !== 302) {
+      throw new DriverFailure(2, `POST /authorize 回傳 ${String(consentPost.status)}`);
+    }
+    const location = consentPost.headers.get("location");
+    if (!location) throw new DriverFailure(2, "POST /authorize 缺少 Location 標頭。");
+    return { redirect: new URL(location), verifier };
+  };
+
+  const allowedMcpEmail = process.env.OPEN_SPLIT_MCP_EMAIL?.trim().toLowerCase() || "owner@example.test";
+
+  // 3. Whitelist denial for non-allowed email
+  const denied = await runDevOAuth("stranger@example.com", ["mcp:read"], clientId);
+  assertCheck(
+    io,
+    "check.mcp_whitelist_denied",
+    denied.redirect.searchParams.get("error") === "access_denied",
+    "非白名單 Email 應該被拒絕存取 MCP。",
+  );
+
+  // 4. Allowed email obtains code -> exchanges PKCE token
+  const allowed = await runDevOAuth(allowedMcpEmail, ["mcp:read", "mcp:write"], clientId);
+  const authCode = allowed.redirect.searchParams.get("code");
+  if (!authCode) throw new DriverFailure(2, "白名單帳號授權沒有收到 code。");
+  const tokenRes = await fetch(`${base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: clientId,
+      code: authCode,
+      code_verifier: allowed.verifier,
+      redirect_uri: redirectUri,
+      resource: `${base}/mcp`,
+    }).toString(),
+  });
+  const tokenJson = (await tokenRes.json()) as { access_token?: string };
+  assertCheck(
+    io,
+    "check.mcp_oauth_token",
+    tokenRes.status === 200 && Boolean(tokenJson.access_token),
+    "MCP OAuth token exchange 失敗。",
+  );
+  const mcpToken = tokenJson.access_token;
+  if (!mcpToken) throw new DriverFailure(2, "MCP token 缺少 access_token。");
+
+  // 5. MCP token isolated from web REST endpoints
+  const webAttempt = await fetch(`${base}/api/groups`, {
+    headers: { authorization: `Bearer ${mcpToken}` },
+  });
+  assertCheck(io, "check.mcp_token_web_isolated", webAttempt.status === 401, "MCP token 不該存取一般 Web API。");
+
+  const mcpCall = async (method: string, params?: Record<string, unknown>, bearer = mcpToken) => {
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "1", method, ...(params ? { params } : {}) }),
+    });
+    const json = (await res.json()) as { result?: { structuredContent?: Record<string, unknown>; isError?: boolean } };
+    return { status: res.status, json };
+  };
+
+  // 6. Initialize + create group + member + upload intent + PNG magic check
+  const initRes = await mcpCall("initialize");
+  if (initRes.status !== 200) throw new DriverFailure(2, "MCP initialize 失敗。");
+
+  const grpRes = await mcpCall("tools/call", {
+    name: "create_group",
+    arguments: { name: "MCP 收據群", defaultCurrency: "TWD", idempotencyKey: `mcp-grp-${randomUUID()}` },
+  });
+  const grpData = grpRes.json.result?.structuredContent as { id?: string; ownerMemberId?: string } | undefined;
+  const mcpGroupId = grpData?.id;
+  const ownerMemberId = grpData?.ownerMemberId;
+  if (!mcpGroupId || !ownerMemberId) throw new DriverFailure(2, "MCP create_group 失敗。");
+
+  const friendRes = await mcpCall("tools/call", {
+    name: "add_member",
+    arguments: { groupId: mcpGroupId, displayName: "小華", virtual: true, idempotencyKey: `mcp-mem-${randomUUID()}` },
+  });
+  const friendId = (friendRes.json.result?.structuredContent as { id?: string } | undefined)?.id;
+  if (!friendId) throw new DriverFailure(2, "MCP add_member 失敗。");
+
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+  const sha256 = createHash("sha256").update(png).digest("hex");
+  const intentRes = await mcpCall("tools/call", {
+    name: "create_attachment_upload",
+    arguments: {
+      groupId: mcpGroupId,
+      filename: "receipt.png",
+      mimeType: "image/png",
+      byteSize: png.byteLength,
+      sha256,
+      idempotencyKey: `mcp-att-${randomUUID()}`,
+    },
+  });
+  const intentData = intentRes.json.result?.structuredContent as
+    | { attachment?: { id?: string }; uploadPath?: string; uploadHeaders?: Record<string, string> }
+    | undefined;
+  const attachmentId = intentData?.attachment?.id;
+  const uploadPath = intentData?.uploadPath;
+  const uploadHeaders = intentData?.uploadHeaders;
+  if (!attachmentId || !uploadPath || !uploadHeaders) throw new DriverFailure(2, "MCP create_attachment_upload 失敗。");
+
+  // Disguised SVG payload must fail magic-bytes validation with 415
+  const fakeSvg = new TextEncoder().encode("<svg></svg>!");
+  const badPut = await fetch(`${base}${uploadPath}`, {
+    method: "PUT",
+    headers: uploadHeaders,
+    body: fakeSvg,
+  });
+  assertCheck(io, "check.r2_magic_bytes_rejected", badPut.status === 415, "偽造 PNG 檔頭應該被 415 拒絕。");
+
+  // Valid PNG succeeds
+  const goodPut = await fetch(`${base}${uploadPath}`, {
+    method: "PUT",
+    headers: uploadHeaders,
+    body: png,
+  });
+  assertCheck(io, "check.r2_receipt_uploaded", goodPut.status === 200, "合法 PNG 收據上傳失敗。");
+
+  // 7. Idempotent MCP add_expense with attachment & FX rate
+  const expIdemKey = `mcp-exp-${randomUUID()}`;
+  const expArgs = {
+    groupId: mcpGroupId,
+    payerId: ownerMemberId,
+    amount: "1000",
+    currency: "JPY",
+    fxRate: { numerator: 21, denominator: 100 },
+    participantIds: [ownerMemberId, friendId],
+    split: { type: "equal" },
+    attachmentIds: [attachmentId],
+    idempotencyKey: expIdemKey,
+  };
+  const exp1 = await mcpCall("tools/call", { name: "add_expense", arguments: expArgs });
+  const exp2 = await mcpCall("tools/call", { name: "add_expense", arguments: expArgs });
+  const exp1Id = (exp1.json.result?.structuredContent as { id?: string } | undefined)?.id;
+  const exp2Id = (exp2.json.result?.structuredContent as { id?: string } | undefined)?.id;
+  assertCheck(
+    io,
+    "check.mcp_idempotent_add_expense",
+    Boolean(exp1Id) && exp1Id === exp2Id,
+    "MCP add_expense 冪等重試沒有回傳同一筆 id。",
+  );
+
+  // 8. Private R2 download via invite-joined Web member + security headers + non-member 403 + delete
+  const inviteRes = await mcpCall("tools/call", {
+    name: "create_invite",
+    arguments: { groupId: mcpGroupId, idempotencyKey: `mcp-inv-${randomUUID()}` },
+  });
+  const inviteToken = (inviteRes.json.result?.structuredContent as { token?: string } | undefined)?.token;
+  if (!inviteToken) throw new DriverFailure(2, "MCP create_invite 失敗。");
+
+  const webState = emptyState();
+  await login(["--as", "alice"], webState, io);
+  const aliceSession = requireSession(webState);
+  await apiRequest(aliceSession.token, `/api/invites/${inviteToken}/accept`, { method: "POST" });
+
+  const dlRes = await fetch(`${base}/api/groups/${mcpGroupId}/attachments/${attachmentId}`, {
+    headers: { authorization: `Bearer ${aliceSession.token}` },
+  });
+  const dlBytes = new Uint8Array(await dlRes.arrayBuffer());
+  const headersOk =
+    dlRes.status === 200 &&
+    (dlRes.headers.get("content-disposition") ?? "").includes("attachment") &&
+    dlRes.headers.get("x-content-type-options") === "nosniff" &&
+    dlRes.headers.get("content-security-policy") === "sandbox" &&
+    dlRes.headers.get("cache-control") === "private, no-store" &&
+    dlBytes.byteLength === png.byteLength &&
+    dlBytes.every((b, idx) => b === png[idx]);
+  assertCheck(io, "check.r2_receipt_download_headers", headersOk, "收據私人下載缺少安全標頭或位元組不一致。");
+
+  const outsiderState = emptyState();
+  await login(["--as", "outsider"], outsiderState, io);
+  const outsiderSession = requireSession(outsiderState);
+  const outsiderDl = await fetch(`${base}/api/groups/${mcpGroupId}/attachments/${attachmentId}`, {
+    headers: { authorization: `Bearer ${outsiderSession.token}` },
+  });
+  assertCheck(io, "check.r2_non_member_download_forbidden", outsiderDl.status === 403, "非群組成員不該下載收據。");
+
+  await mcpCall("tools/call", {
+    name: "delete_attachment",
+    arguments: { groupId: mcpGroupId, attachmentId, idempotencyKey: `mcp-del-${randomUUID()}` },
+  });
+  const afterDelDl = await fetch(`${base}/api/groups/${mcpGroupId}/attachments/${attachmentId}`, {
+    headers: { authorization: `Bearer ${aliceSession.token}` },
+  });
+  assertCheck(io, "check.r2_receipt_deleted", afterDelDl.status === 404, "刪除收據後應回傳 404。");
+
+  // 9. Scope isolation: mcp:read token cannot call write tools
+  const roDcr = await fetch(`${base}/oauth/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      client_name: "ReadOnlyAccept",
+      redirect_uris: [redirectUri],
+      token_endpoint_auth_method: "none",
+    }),
+  });
+  const { client_id: roClientId } = (await roDcr.json()) as { client_id: string };
+  const roAuth = await runDevOAuth(allowedMcpEmail, ["mcp:read"], roClientId);
+  const roCode = roAuth.redirect.searchParams.get("code");
+  if (!roCode) throw new DriverFailure(2, "只讀 MCP client 授權失敗。");
+  const roTokenRes = await fetch(`${base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: roClientId,
+      code: roCode,
+      code_verifier: roAuth.verifier,
+      redirect_uri: redirectUri,
+      resource: `${base}/mcp`,
+    }).toString(),
+  });
+  const { access_token: roToken } = (await roTokenRes.json()) as { access_token: string };
+  const roRead = await mcpCall("tools/call", { name: "list_groups", arguments: {} }, roToken);
+  const roWrite = await mcpCall(
+    "tools/call",
+    { name: "void_expense", arguments: { groupId: mcpGroupId, expenseId: exp1Id } },
+    roToken,
+  );
+  assertCheck(
+    io,
+    "check.mcp_read_only_scope_enforced",
+    roRead.status === 200 && roWrite.status === 403,
+    "mcp:read 權杖應該允許讀取並拒絕寫入工具（403）。",
+  );
 }
 
 async function acceptSettleUp(
@@ -621,9 +1093,13 @@ async function addExpense(args: readonly string[], state: DriverState, io: Drive
   io.stdout(`expense_id: ${result.id}`);
   io.stdout(`expense_amount_minor: ${parsed.body.amount}`);
   io.stdout(`expense_currency: ${parsed.body.currency}`);
+  if (parsed.body.currency !== result.convertedCurrency) {
+    io.stdout(`expense_converted_minor: ${result.convertedAmount}`);
+    io.stdout(`expense_converted_currency: ${result.convertedCurrency}`);
+  }
   io.stdout(`expense_split: ${parsed.body.split.type}`);
   io.stdout(`expense_participants: ${String(parsed.body.participantIds.length)}`);
-  printShares(result.shares, parsed.body.amount, io);
+  printShares(result.shares, result.convertedAmount, io);
   await printInvariants(session.token, group.id, io);
 }
 
@@ -655,9 +1131,13 @@ async function updateExpense(args: readonly string[], state: DriverState, io: Dr
   io.stdout(`expense_updated: ${result.id}`);
   io.stdout(`expense_amount_minor: ${parsed.body.amount}`);
   io.stdout(`expense_currency: ${parsed.body.currency}`);
+  if (parsed.body.currency !== result.convertedCurrency) {
+    io.stdout(`expense_converted_minor: ${result.convertedAmount}`);
+    io.stdout(`expense_converted_currency: ${result.convertedCurrency}`);
+  }
   io.stdout(`expense_split: ${parsed.body.split.type}`);
   io.stdout(`expense_participants: ${String(parsed.body.participantIds.length)}`);
-  printShares(result.shares, parsed.body.amount, io);
+  printShares(result.shares, result.convertedAmount, io);
   await printInvariants(session.token, group.id, io);
 }
 
@@ -963,12 +1443,26 @@ async function printInvariants(token: string, groupId: string, io: DriverIo) {
   const expected = computeBalances(
     detail.expenses
       .filter((expense) => !expense.voided)
-      .map((expense) => ({
-        payerId: expense.payerId,
-        amount: parseUnsignedMinor(expense.amount),
-        participantIds: expense.participantIds,
-        split: wireSplit(expense.split),
-      })),
+      .map((expense) => {
+        const converted = allocateConvertedExpense({
+          amount: parseUnsignedMinor(expense.amount),
+          fromCurrency: expense.currency,
+          toCurrency: detail.group.defaultCurrency,
+          fxNumerator: expense.fxRate?.numerator ?? null,
+          fxDenominator: expense.fxRate?.denominator ?? null,
+          participantIds: expense.participantIds,
+          split: wireSplit(expense.split),
+        });
+        return {
+          payerId: expense.payerId,
+          amount: converted.convertedAmount,
+          participantIds: converted.convertedShares.map((share) => share.participantId),
+          split: {
+            type: "exact" as const,
+            amounts: Object.fromEntries(converted.convertedShares.map((share) => [share.participantId, share.amount])),
+          },
+        };
+      }),
     detail.settlements.filter((row) => !row.voided).map((row) => ({
       fromId: row.fromMemberId,
       toId: row.toMemberId,
@@ -1001,7 +1495,8 @@ function readExpenseFlags(args: readonly string[]) {
   const payerFlag = takeOption(groupFlag.rest, "payer");
   const amountFlag = takeOption(payerFlag.rest, "amount");
   const currencyFlag = takeOption(amountFlag.rest, "currency");
-  const participantsFlag = takeOption(currencyFlag.rest, "participants");
+  const fxRateFlag = takeOption(currencyFlag.rest, "fx-rate");
+  const participantsFlag = takeOption(fxRateFlag.rest, "participants");
   const splitFlag = takeOption(participantsFlag.rest, "split");
   const amountsFlag = takeOption(splitFlag.rest, "amounts");
   const pointsFlag = takeOption(amountsFlag.rest, "basis-points");
@@ -1015,11 +1510,21 @@ function readExpenseFlags(args: readonly string[]) {
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
   const split = buildSplit(splitFlag.value ?? "equal", participantIds, amountsFlag.value, pointsFlag.value, weightsFlag.value);
+  let fxRate: FxRateWire | undefined;
+  if (fxRateFlag.value !== undefined) {
+    try {
+      fxRate = parseRateRatio(fxRateFlag.value);
+    } catch (error) {
+      if (error instanceof LedgerError) throw new DriverFailure(1, error.message);
+      throw error;
+    }
+  }
   const body = {
     groupId,
     payerId: requireOption(payerFlag.value, "payer"),
     amount: requireOption(amountFlag.value, "amount"),
     currency: requireOption(currencyFlag.value, "currency"),
+    ...(fxRate ? { fxRate } : {}),
     participantIds,
     split,
     ...(categoryFlag.value ? { category: categoryFlag.value } : {}),

@@ -12,6 +12,9 @@ export const LedgerErrorCode = {
   exactMissingParticipant: "exact_missing_participant",
   balancesNotConserved: "balances_not_conserved",
   unknownTransferParty: "unknown_transfer_party",
+  unknownCurrency: "unknown_currency",
+  invalidRate: "invalid_rate",
+  invalidDecimalAmount: "invalid_decimal_amount",
   internal: "internal",
 } as const;
 

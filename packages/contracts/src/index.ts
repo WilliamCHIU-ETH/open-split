@@ -1,5 +1,6 @@
 export {
   currencyCodeSchema,
+  idempotencyKeySchema,
   idSchema,
   parseSignedMinor,
   parseUnsignedMinor,
@@ -9,15 +10,34 @@ export {
 } from "./money.ts";
 
 export {
+  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MAX_PER_EXPENSE,
+  attachmentDeleteResultSchema,
+  attachmentListSchema,
+  attachmentMimeTypes,
+  attachmentMimeTypeSchema,
+  attachmentSummarySchema,
+  attachmentUploadIntentInputSchema,
+  attachmentUploadIntentResultSchema,
+  GROUP_ATTACHMENT_QUOTA_BYTES,
+  type AttachmentMimeType,
+  type AttachmentSummary,
+  type AttachmentUploadIntentInput,
+  type AttachmentUploadIntentResult,
+} from "./attachments.ts";
+
+export {
   equalSplitSchema,
   exactSplitSchema,
   expenseInputSchema,
   expenseResultSchema,
+  fxRateSchema,
   percentageSplitSchema,
   sharesSplitSchema,
   shareWireSchema,
   splitSchema,
   type ExpenseInput,
+  type FxRateWire,
   type SplitWire,
 } from "./expense.ts";
 
@@ -29,6 +49,7 @@ export {
   balanceWireSchema,
   balancesResultSchema,
   createGroupInputSchema,
+  getMcpToolDefinitions,
   groupSchema,
   mcpToolContracts,
   memberSchema,
@@ -36,6 +57,9 @@ export {
   type ActivityResult,
   type BalancesResult,
   type Group,
+  type McpScope,
+  type McpToolContract,
+  type McpToolDefinition,
   type McpToolName,
   type Member,
 } from "./mcp.ts";

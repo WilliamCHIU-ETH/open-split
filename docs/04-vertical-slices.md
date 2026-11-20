@@ -28,15 +28,15 @@ Driver：`add-expense --split exact|percentage|shares`，以及 `add-member --vi
 
 Driver：`settle --record` 把方案逐筆寫入，再向伺服器讀餘額確認每人為 0；`record-settlement`、`void-settlement`、`set-payment-profile`、`show-summary` 各自打 Worker。結清只是記帳，不經手付款。幣別必須是群組預設幣別，多幣別仍在切片 4。
 
-## 4. 多幣別
+## 4. 多幣別（已完成）
 
-一筆支出可以不是群組預設幣別。匯率是兩個整數。換算在 `packages/core`，禁止浮點匯率。換完之後，餘額仍以群組預設幣別合計為 0。
+一筆支出可以不是群組預設幣別。匯率是兩個正整數比值（`numerator/denominator`）。換算在 `packages/core`（依 ISO 4217 小數位與 Hamilton 最大餘額法守恆），禁止浮點匯率。換完之後，餘額與結清皆以群組預設幣別計算並合計為 0。見 [ADR-0006](adr/0006-fx-conversion-and-rounding.md)。
 
-## 5. OAuth 2.1 與 MCP
+## 5. OAuth 2.1 與 MCP（已完成）
 
-外部代理人可以走授權碼與 PKCE。沒有 `mcp_allowed` 的人被拒。不是群組成員也不能對該群呼叫工具。工具實作呼叫與網頁相同的服務層與 `packages/contracts`。代理人可以附上收據或檔案，帳本只保存，不做 OCR。
+外部代理人透過 `@cloudflare/workers-oauth-provider` 走 OAuth 2.1 PKCE（`mcp:read` / `mcp:write`）+ Google OIDC 與 `MCP_ALLOWED_EMAILS` Gmail 白名單驗證。不是群組成員也不能對該群呼叫工具。工具實作呼叫與網頁相同的服務層與 `packages/contracts`，支援 `idempotencyKey`。代理人與網頁都可以透過兩階段上傳把收據存進 R2（僅保存、不辨識，強制 magic bytes 與 SHA-256 驗證）。見 [ADR-0007](adr/0007-mcp-oauth-google-whitelist.md) 與 [ADR-0008](adr/0008-r2-receipt-attachments.md)。
 
-本機驗收繼續用假身份，不把假身份開到部署設定。
+本機驗收繼續用假身份與 dev OAuth 同意頁，不把假身份開到部署設定。
 
 ## 6. LINE Login、LIFF、分享卡片
 

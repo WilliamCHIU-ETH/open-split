@@ -1,4 +1,4 @@
-import { minor, type Minor } from "@open-split/core";
+import { isSupportedCurrency, minor, type Minor } from "@open-split/core";
 import { z } from "zod";
 
 /** JSON money is a string of integer minor units so parsers never see a binary float. */
@@ -16,13 +16,23 @@ export const signedMinorSchema = z
     "Signed minor units must be a base-10 integer string with no decimal point.",
   );
 
-export const currencyCodeSchema = z.string().regex(/^[A-Z]{3}$/, "Currency must be an ISO 4217 code.");
+export const currencyCodeSchema = z
+  .string()
+  .regex(/^[A-Z]{3}$/, "Currency must be an ISO 4217 code.")
+  .refine(isSupportedCurrency, "Unsupported ISO 4217 currency.");
 
 export const idSchema = z
   .string()
   .regex(/^[A-Za-z][A-Za-z0-9_-]{0,80}$/, "Id must start with a letter and use only letters, digits, _ and -.");
 
-export const positiveIntSchema = z.number().int().positive();
+export const positiveIntSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+
+export const idempotencyKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_.:-]+$/, "Idempotency key contains invalid characters.");
 
 export function parseUnsignedMinor(wire: string): Minor {
   return minor(BigInt(unsignedMinorSchema.parse(wire)));

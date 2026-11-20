@@ -1,3 +1,3 @@
-import { createApp } from "./http/app.ts";
+import { createWorkerHandler } from "./mcp/oauth.ts";
 
-export default createApp();
+export default createWorkerHandler();

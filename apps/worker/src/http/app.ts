@@ -1,10 +1,13 @@
 import { assertDevAuthAllowed, isDevAuthEnvironment, parseAuthEnv } from "@open-split/auth";
 import {
+  ATTACHMENT_MAX_BYTES,
   addMemberInputSchema,
+  attachmentUploadIntentInputSchema,
   claimTokenSchema,
   createGroupInputSchema,
   devSignInSchema,
   expenseInputSchema,
+  idempotencyKeySchema,
   idSchema,
   inviteTokenSchema,
   paymentProfileWriteSchema,
@@ -14,7 +17,16 @@ import {
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createDb } from "../db/client.ts";
+import {
+  authorizeAttachmentUpload,
+  createAttachmentUploadIntent,
+  deleteAttachment,
+  downloadAttachmentObject,
+  listGroupAttachments,
+  uploadAttachmentBinary,
+} from "../ledger/attachments.ts";
 import { asServiceError, ServiceError } from "../ledger/errors.ts";
+import { runIdempotent } from "../ledger/idempotency.ts";
 import {
   acceptInvite,
   addExpense,
@@ -43,11 +55,14 @@ import {
   voidSettlement,
   type SessionUser,
 } from "../ledger/service.ts";
+import { readBoundedBytes } from "../mcp/server.ts";
 
 const SESSION_COOKIE = "os_session";
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 const REQUEST_HEADER = "x-open-split-request";
+const IDEMPOTENCY_HEADER = "idempotency-key";
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const ATTACHMENT_CONTENT_PATH = /^\/api\/groups\/[^/]+\/attachments\/[^/]+\/content$/;
 
 type AppEnv = {
   Bindings: Env;
@@ -109,6 +124,9 @@ export function createApp() {
 
   app.use("/api/*", async (c, next) => {
     if (c.req.path === "/api/dev/session") return next();
+    if (c.req.method === "PUT" && ATTACHMENT_CONTENT_PATH.test(c.req.path) && c.req.header("x-upload-token")) {
+      return next();
+    }
     const presented = presentedToken(c);
     if (!presented) return c.json({ error: "unauthenticated", detail: "請先登入。" }, 401);
     if (!presented.bearer && MUTATING.has(c.req.method) && c.req.header(REQUEST_HEADER) !== "1") {
@@ -139,7 +157,7 @@ export function createApp() {
 
   app.post("/api/groups", async (c) => {
     const body = parseWith(createGroupInputSchema, await readJson(c));
-    const group = await createGroup(createDb(c.env.DB), c.get("user"), body);
+    const group = await createGroup(createDb(c.env.DB), c.get("user"), body, { via: "web" });
     console.log(JSON.stringify({ message: "group.created", groupId: group.id }));
     return c.json(group, 201);
   });
@@ -152,7 +170,7 @@ export function createApp() {
   app.post("/api/groups/:groupId/members", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     const body = parseWith(addMemberInputSchema, { ...(await readJsonObject(c)), groupId });
-    const member = await addMember(createDb(c.env.DB), c.get("user"), body);
+    const member = await addMember(createDb(c.env.DB), c.get("user"), body, { via: "web" });
     console.log(JSON.stringify({ message: "member.added", groupId, memberId: member.id, virtual: member.virtual }));
     return c.json(member, 201);
   });
@@ -161,7 +179,12 @@ export function createApp() {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     const input = parseWith(expenseInputSchema, await readJson(c));
     assertSameGroup(input.groupId, groupId);
-    const result = await addExpense(createDb(c.env.DB), c.get("user"), input);
+    const db = createDb(c.env.DB);
+    const user = c.get("user");
+    const key = parseIdempotencyHeader(c);
+    const result = await runIdempotent(db, user.userId, "http:add_expense", key, input, () =>
+      addExpense(db, user, input, { via: "web" }),
+    );
     console.log(JSON.stringify({ message: "expense.created", groupId, expenseId: result.id }));
     return c.json(result, 201);
   });
@@ -171,7 +194,12 @@ export function createApp() {
     const expenseId = parseId(c.req.param("expenseId"), "expenseId");
     const input = parseWith(expenseInputSchema, await readJson(c));
     assertSameGroup(input.groupId, groupId);
-    const result = await updateExpense(createDb(c.env.DB), c.get("user"), expenseId, input);
+    const db = createDb(c.env.DB);
+    const user = c.get("user");
+    const key = parseIdempotencyHeader(c);
+    const result = await runIdempotent(db, user.userId, "http:update_expense", key, { expenseId, ...input }, () =>
+      updateExpense(db, user, expenseId, input, { via: "web" }),
+    );
     console.log(JSON.stringify({ message: "expense.updated", groupId, expenseId }));
     return c.json(result);
   });
@@ -179,7 +207,7 @@ export function createApp() {
   app.post("/api/groups/:groupId/expenses/:expenseId/void", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     const expenseId = parseId(c.req.param("expenseId"), "expenseId");
-    const result = await voidExpense(createDb(c.env.DB), c.get("user"), groupId, expenseId);
+    const result = await voidExpense(createDb(c.env.DB), c.get("user"), groupId, expenseId, { via: "web" });
     console.log(JSON.stringify({ message: "expense.voided", groupId, expenseId }));
     return c.json(result);
   });
@@ -197,7 +225,12 @@ export function createApp() {
   app.post("/api/groups/:groupId/settlements", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     const input = parseWith(settlementWriteSchema, await readJson(c));
-    const result = await recordSettlement(createDb(c.env.DB), c.get("user"), groupId, input);
+    const db = createDb(c.env.DB);
+    const user = c.get("user");
+    const key = parseIdempotencyHeader(c);
+    const result = await runIdempotent(db, user.userId, "http:record_settlement", key, { groupId, ...input }, () =>
+      recordSettlement(db, user, groupId, input, { via: "web" }),
+    );
     console.log(JSON.stringify({ message: "settlement.recorded", groupId, settlementId: result.id }));
     return c.json(result, 201);
   });
@@ -205,7 +238,7 @@ export function createApp() {
   app.post("/api/groups/:groupId/settlements/:settlementId/void", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     const settlementId = parseId(c.req.param("settlementId"), "settlementId");
-    const result = await voidSettlement(createDb(c.env.DB), c.get("user"), groupId, settlementId);
+    const result = await voidSettlement(createDb(c.env.DB), c.get("user"), groupId, settlementId, { via: "web" });
     console.log(JSON.stringify({ message: "settlement.voided", groupId, settlementId }));
     return c.json(result);
   });
@@ -214,13 +247,13 @@ export function createApp() {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     const memberId = parseId(c.req.param("memberId"), "memberId");
     const profile = parseWith(paymentProfileWriteSchema, await readJson(c));
-    return c.json(await updatePaymentProfile(createDb(c.env.DB), c.get("user"), groupId, memberId, profile));
+    return c.json(await updatePaymentProfile(createDb(c.env.DB), c.get("user"), groupId, memberId, profile, { via: "web" }));
   });
 
   app.delete("/api/groups/:groupId/members/:memberId/payment-profile", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     const memberId = parseId(c.req.param("memberId"), "memberId");
-    return c.json(await clearPaymentProfile(createDb(c.env.DB), c.get("user"), groupId, memberId));
+    return c.json(await clearPaymentProfile(createDb(c.env.DB), c.get("user"), groupId, memberId, { via: "web" }));
   });
 
   app.get("/api/groups/:groupId/summary", async (c) => {
@@ -231,6 +264,102 @@ export function createApp() {
   app.get("/api/groups/:groupId/activity", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     return c.json(await listActivity(createDb(c.env.DB), c.get("user"), groupId));
+  });
+
+  // --- R2 Receipt Attachments (Slice 5) ---
+
+  app.get("/api/groups/:groupId/attachments", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const expenseIdRaw = c.req.query("expenseId");
+    const expenseId = expenseIdRaw ? parseId(expenseIdRaw, "expenseId") : undefined;
+    return c.json(await listGroupAttachments(createDb(c.env.DB), c.env.RECEIPTS_BUCKET, c.get("user"), groupId, expenseId));
+  });
+
+  app.post("/api/groups/:groupId/attachments/upload-intent", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const raw = await readJsonObject(c);
+    const input = parseWith(attachmentUploadIntentInputSchema, { ...raw, groupId });
+    const db = createDb(c.env.DB);
+    const user = c.get("user");
+    const key = parseIdempotencyHeader(c);
+    const result = await runIdempotent(
+      db,
+      user.userId,
+      "http:attachment_intent",
+      key,
+      input,
+      () => createAttachmentUploadIntent(db, c.env.RECEIPTS_BUCKET, user, input),
+      { redactResult: () => true },
+    );
+    return c.json(result, 201);
+  });
+
+  app.put("/api/groups/:groupId/attachments/:attachmentId/content", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const attachmentId = parseId(c.req.param("attachmentId"), "attachmentId");
+    const uploadToken = c.req.header("x-upload-token") ?? null;
+    const actor = uploadToken ? null : c.get("user");
+    const contentType = c.req.header("content-type") ?? null;
+    const db = createDb(c.env.DB);
+    const pending = await authorizeAttachmentUpload(db, c.env.RECEIPTS_BUCKET, {
+      groupId,
+      attachmentId,
+      uploadToken,
+      actor,
+      contentType,
+      contentLengthHeader: c.req.header("content-length") ?? null,
+    });
+    const body = await readBoundedBytes(c.req.raw, Math.min(ATTACHMENT_MAX_BYTES, pending.byteSize));
+    const via = c.req.header("x-open-split-request") === "1" || (!uploadToken && actor) ? "web" : "mcp";
+    const summary = await uploadAttachmentBinary(db, c.env.RECEIPTS_BUCKET, {
+      groupId,
+      attachmentId,
+      uploadToken,
+      actor,
+      body,
+      contentType,
+      authorizedRow: pending,
+      audit: { via },
+    });
+    console.log(JSON.stringify({ message: "attachment.uploaded", groupId, attachmentId }));
+    return c.json(summary);
+  });
+
+  app.get("/api/groups/:groupId/attachments/:attachmentId", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const attachmentId = parseId(c.req.param("attachmentId"), "attachmentId");
+    const { row, object } = await downloadAttachmentObject(
+      createDb(c.env.DB),
+      c.env.RECEIPTS_BUCKET,
+      c.get("user"),
+      groupId,
+      attachmentId,
+    );
+    const asciiName = row.filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+    const encodedName = encodeURIComponent(row.filename).replace(
+      /[!'()*]/g,
+      (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+    const headers = new Headers();
+    headers.set("Content-Type", row.mimeType);
+    headers.set(
+      "Content-Disposition",
+      `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
+    );
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("Content-Security-Policy", "sandbox");
+    headers.set("Cache-Control", "private, no-store");
+    return new Response(object.body, { status: 200, headers });
+  });
+
+  app.delete("/api/groups/:groupId/attachments/:attachmentId", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const attachmentId = parseId(c.req.param("attachmentId"), "attachmentId");
+    const result = await deleteAttachment(createDb(c.env.DB), c.env.RECEIPTS_BUCKET, c.get("user"), groupId, attachmentId, {
+      via: "web",
+    });
+    console.log(JSON.stringify({ message: "attachment.deleted", groupId, attachmentId }));
+    return c.json(result);
   });
 
   app.post("/api/groups/:groupId/members/:memberId/claim-link", async (c) => {
@@ -255,7 +384,7 @@ export function createApp() {
 
   app.post("/api/groups/:groupId/invites", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
-    const invite = await createInvite(createDb(c.env.DB), c.get("user"), groupId);
+    const invite = await createInvite(createDb(c.env.DB), c.get("user"), groupId, { via: "web" });
     console.log(JSON.stringify({ message: "invite.created", groupId }));
     return c.json(invite, 201);
   });
@@ -313,6 +442,16 @@ function requireRequestHeader(c: AppContext): void {
   if (c.req.header(REQUEST_HEADER) !== "1") {
     throw new ServiceError(403, "csrf", "缺少同源請求標頭。");
   }
+}
+
+function parseIdempotencyHeader(c: AppContext): string | undefined {
+  const raw = c.req.header(IDEMPOTENCY_HEADER);
+  if (raw === undefined || raw.length === 0) return undefined;
+  const parsed = idempotencyKeySchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ServiceError(400, "invalid_idempotency_key", "Idempotency-Key 格式不正確。");
+  }
+  return parsed.data;
 }
 
 function setSessionCookie(c: AppContext, token: string): void {

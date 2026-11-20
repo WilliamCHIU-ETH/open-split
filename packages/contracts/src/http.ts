@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { expenseInputSchema, shareWireSchema, splitSchema } from "./expense.ts";
+import { attachmentSummarySchema } from "./attachments.ts";
+import { expenseInputSchema, fxRateSchema, shareWireSchema, splitSchema } from "./expense.ts";
 import { balanceWireSchema, groupSchema, memberSchema } from "./mcp.ts";
 import { currencyCodeSchema, idSchema, signedMinorSchema, unsignedMinorSchema } from "./money.ts";
 import { paymentProfileWriteSchema, settlementViewSchema } from "./settlement.ts";
@@ -42,12 +43,17 @@ export const expenseViewSchema = z.strictObject({
   payerId: idSchema,
   amount: unsignedMinorSchema,
   currency: currencyCodeSchema,
+  convertedAmount: unsignedMinorSchema,
+  convertedCurrency: currencyCodeSchema,
+  fxRate: fxRateSchema.nullable(),
   participantIds: z.array(idSchema).min(1),
   split: splitSchema,
   category: z.string().min(1).max(40).nullable(),
   note: z.string().max(500).nullable(),
   voided: z.boolean(),
   shares: z.array(shareWireSchema),
+  originalShares: z.array(shareWireSchema),
+  attachments: z.array(attachmentSummarySchema),
 });
 
 export const groupDetailSchema = z.strictObject({

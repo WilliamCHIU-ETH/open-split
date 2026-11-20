@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, exists, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, exists, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   createDevGoogleProvider,
   createDevLineProvider,
@@ -17,9 +17,10 @@ import {
   parseUnsignedMinor,
 } from "@open-split/contracts";
 import {
-  allocate,
+  allocateConvertedExpense,
   balancesSum,
   computeBalances,
+  currencyExponent,
   formatMinor,
   minorFromSafeInteger,
   minorToSafeInteger,
@@ -31,11 +32,13 @@ import {
   ZERO_MINOR,
   type Minor,
   type NetBalance,
+  type Share,
   type SplitSpec,
 } from "@open-split/core";
 import type { LedgerDb } from "../db/client.ts";
 import {
   activityLog,
+  attachments,
   authIdentities,
   expenseShares,
   expenses,
@@ -47,7 +50,12 @@ import {
   settlements,
   users,
 } from "../db/schema.ts";
-import { ServiceError } from "./errors.ts";
+import {
+  clearUnusedAttachmentLink,
+  toAttachmentSummary,
+  validateAttachmentsForExpense,
+} from "./attachments.ts";
+import { errorHasText, ServiceError } from "./errors.ts";
 import { newId, newSecret, sha256Hex } from "./ids.ts";
 
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -57,11 +65,27 @@ export interface SessionUser {
   readonly displayName: string;
   readonly provider: AuthProviderId;
   readonly subject: string;
+  readonly primaryEmail?: string | null;
 }
+
+export interface AuditContext {
+  readonly via: "web" | "mcp";
+  readonly clientId?: string;
+}
+
+const DEFAULT_AUDIT: AuditContext = { via: "web" };
 
 type MemberRow = typeof groupMembers.$inferSelect;
 type ExpenseRow = typeof expenses.$inferSelect;
 type ShareRow = typeof expenseShares.$inferSelect;
+type AttachmentRow = typeof attachments.$inferSelect;
+
+export function parseAllowedEmails(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
 
 export async function devSignIn(
   db: LedgerDb,
@@ -125,6 +149,74 @@ export async function devSignIn(
   return { token, userId, displayName, provider: identity.provider, subject: identity.subject };
 }
 
+export async function resolveGoogleUser(
+  db: LedgerDb,
+  claims: { readonly sub: string; readonly email: string; readonly name?: string },
+): Promise<SessionUser> {
+  const normalizedEmail = claims.email.trim().toLowerCase();
+  const [identity] = await db
+    .select()
+    .from(authIdentities)
+    .where(and(eq(authIdentities.provider, "google"), eq(authIdentities.subject, claims.sub)))
+    .limit(1);
+  const now = new Date();
+  if (identity) {
+    const [user] = await db.select().from(users).where(eq(users.id, identity.userId)).limit(1);
+    if (!user) throw new ServiceError(500, "missing_user", "身份沒有對應的使用者。");
+    if (user.primaryEmail !== normalizedEmail) {
+      await db.update(users).set({ primaryEmail: normalizedEmail, updatedAt: now }).where(eq(users.id, user.id));
+    }
+    return {
+      userId: user.id,
+      displayName: user.displayName,
+      provider: "google",
+      subject: identity.subject,
+      primaryEmail: normalizedEmail,
+    };
+  }
+
+  const userId = newId("usr");
+  const displayName = claims.name?.trim() || normalizedEmail.split("@")[0] || "Google 使用者";
+  await db.batch([
+    db.insert(users).values({
+      id: userId,
+      displayName,
+      primaryEmail: normalizedEmail,
+      mcpAllowed: false,
+      createdAt: now,
+      updatedAt: now,
+    }),
+    db.insert(authIdentities).values({
+      id: newId("idn"),
+      userId,
+      provider: "google",
+      subject: claims.sub,
+      createdAt: now,
+    }),
+  ]);
+  return {
+    userId,
+    displayName,
+    provider: "google",
+    subject: claims.sub,
+    primaryEmail: normalizedEmail,
+  };
+}
+
+export async function isUserMcpAuthorized(
+  db: LedgerDb,
+  allowedEmailsRaw: string | undefined,
+  userId: string,
+  emailHint?: string,
+): Promise<boolean> {
+  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!user) return false;
+  if (user.mcpAllowed) return true;
+  const email = (user.primaryEmail ?? emailHint)?.trim().toLowerCase();
+  if (!email) return false;
+  return parseAllowedEmails(allowedEmailsRaw).includes(email);
+}
+
 export async function listDevUsers(db: LedgerDb): Promise<SessionUser[]> {
   const rows = await db
     .select({
@@ -163,6 +255,7 @@ export async function readSession(db: LedgerDb, token: string): Promise<SessionU
     displayName: user.displayName,
     provider: identity.provider,
     subject: identity.subject,
+    primaryEmail: user.primaryEmail,
   };
 }
 
@@ -174,7 +267,9 @@ export async function createGroup(
   db: LedgerDb,
   actor: SessionUser,
   input: { readonly name: string; readonly defaultCurrency: string },
+  audit: AuditContext = DEFAULT_AUDIT,
 ) {
+  currencyExponent(input.defaultCurrency);
   const now = new Date();
   const groupId = newId("grp");
   const memberId = newId("mem");
@@ -203,6 +298,7 @@ export async function createGroup(
       entityType: "group",
       entityId: groupId,
       summary: `建立群組「${input.name}」`,
+      audit,
       createdAt: now,
     }),
   ]);
@@ -240,7 +336,9 @@ export async function getGroupDetail(db: LedgerDb, actor: SessionUser, groupId: 
   return {
     group: { id: group.id, name: group.name, defaultCurrency: group.defaultCurrency },
     members: members.map((row) => ({ ...toMember(row), paymentProfile: profilesByMember.get(row.id) ?? null })),
-    expenses: ledger.expenseRows.map((row) => toExpenseView(row, ledger.shares.get(row.id) ?? [])),
+    expenses: ledger.expenseRows.map((row) =>
+      toExpenseView(row, group.defaultCurrency, ledger.shares.get(row.id) ?? [], ledger.attachmentsByExpense.get(row.id) ?? []),
+    ),
     settlements: ledger.settlementRows.map(toSettlementView),
     balances: wireBalances(computeBalances(active.expenses, active.transfers)),
   };
@@ -250,6 +348,7 @@ export async function addMember(
   db: LedgerDb,
   actor: SessionUser,
   input: { readonly groupId: string; readonly displayName: string; readonly virtual: boolean; readonly userId?: string },
+  audit: AuditContext = DEFAULT_AUDIT,
 ) {
   const { members } = await requireMembership(db, input.groupId, actor.userId);
   if (input.virtual) {
@@ -274,6 +373,7 @@ export async function addMember(
         entityType: "member",
         entityId: memberId,
         summary: `建立虛擬成員「${input.displayName}」`,
+        audit,
         createdAt: now,
       }),
     ]);
@@ -320,6 +420,7 @@ export async function addMember(
         entityType: "member",
         entityId: memberId,
         summary: `加入成員「${input.displayName}」`,
+        audit,
         createdAt: now,
       }),
     ]);
@@ -340,41 +441,114 @@ export async function addMember(
   };
 }
 
-export async function addExpense(db: LedgerDb, actor: SessionUser, input: ExpenseInput) {
-  const { group, members } = await requireMembership(db, input.groupId, actor.userId);
+export async function addExpense(
+  db: LedgerDb,
+  actor: SessionUser,
+  input: ExpenseInput,
+  audit: AuditContext = DEFAULT_AUDIT,
+) {
+  const { group, members, actor: actorMember } = await requireMembership(db, input.groupId, actor.userId);
   const draft = prepareExpense(group.defaultCurrency, members, input);
+  const attachmentIds = input.attachmentIds ? [...new Set(input.attachmentIds)] : [];
+  if (attachmentIds.length > 0) {
+    await validateAttachmentsForExpense(db, input.groupId, null, attachmentIds);
+  }
   const now = new Date();
   const expenseId = newId("exp");
-  await db.batch([
-    db.insert(expenses).values({
-      id: expenseId,
-      groupId: input.groupId,
-      payerMemberId: input.payerId,
-      amountMinor: minorToSafeInteger(draft.amount),
-      currency: input.currency,
-      fxNumerator: null,
-      fxDenominator: null,
-      category: blankToNull(input.category),
-      note: blankToNull(input.note),
-      splitJson: JSON.stringify(input.split),
-      voidedAt: null,
-      createdByUserId: actor.userId,
-      createdAt: now,
-      updatedAt: now,
-    }),
-    db.insert(expenseShares).values(shareValues(expenseId, draft.shares)),
-    activityInsert(db, {
-      groupId: input.groupId,
-      actorUserId: actor.userId,
-      action: "expense.created",
-      entityType: "expense",
-      entityId: expenseId,
-      summary: expenseSummary("記了一筆", input),
-      createdAt: now,
-      shares: wireShares(draft.shares),
-    }),
-  ]);
-  return { id: expenseId, shares: wireShares(draft.shares) };
+  const category = blankToNull(input.category?.trim());
+  const note = blankToNull(input.note);
+  const splitJson = JSON.stringify(input.split);
+  const shares = shareValues(expenseId, draft.convertedShares, draft.originalShares);
+  const activity = {
+    groupId: input.groupId,
+    actorUserId: actor.userId,
+    action: "expense.created",
+    entityType: "expense",
+    entityId: expenseId,
+    summary: expenseSummary(`${actorMember.displayName} 記了一筆`, input, group.defaultCurrency, draft.convertedAmount),
+    audit,
+    createdAt: now,
+    shares: wireShares(draft.convertedShares),
+    payload: {
+      originalAmount: formatMinor(draft.originalAmount),
+      originalCurrency: input.currency,
+      convertedAmount: formatMinor(draft.convertedAmount),
+      convertedCurrency: group.defaultCurrency,
+      ...(input.fxRate ? { fxRate: input.fxRate } : {}),
+    },
+  };
+
+  if (attachmentIds.length === 0) {
+    await db.batch([
+      db.insert(expenses).values({
+        id: expenseId,
+        groupId: input.groupId,
+        payerMemberId: input.payerId,
+        amountMinor: minorToSafeInteger(draft.originalAmount),
+        currency: input.currency,
+        fxNumerator: input.fxRate?.numerator ?? null,
+        fxDenominator: input.fxRate?.denominator ?? null,
+        convertedAmountMinor: minorToSafeInteger(draft.convertedAmount),
+        category,
+        note,
+        splitJson,
+        voidedAt: null,
+        createdByUserId: actor.userId,
+        createdAt: now,
+        updatedAt: now,
+      }),
+      db.insert(expenseShares).values(shares),
+      activityInsert(db, activity),
+    ]);
+  } else {
+    const claimableCount = db
+      .select({ count: sql<number>`count(*)` })
+      .from(attachments)
+      .where(
+        and(
+          eq(attachments.groupId, input.groupId),
+          inArray(attachments.id, attachmentIds),
+          isNull(attachments.expenseId),
+          eq(attachments.status, "ready"),
+          isNull(attachments.deletedAt),
+        ),
+      );
+    const expenseExists = exists(db.select({ id: expenses.id }).from(expenses).where(eq(expenses.id, expenseId)));
+    const [inserted] = await db.batch([
+      db
+        .insert(expenses)
+        .select(
+          sql`select ${expenseId}, ${input.groupId}, ${input.payerId}, ${minorToSafeInteger(draft.originalAmount)}, ${input.currency}, ${input.fxRate?.numerator ?? null}, ${input.fxRate?.denominator ?? null}, ${minorToSafeInteger(draft.convertedAmount)}, ${category}, ${note}, ${splitJson}, ${null}, ${actor.userId}, ${now.getTime()}, ${now.getTime()} where (${claimableCount}) = ${attachmentIds.length}`,
+        )
+        .returning({ id: expenses.id }),
+      insertSharesGuarded(db, shares, expenseExists),
+      db
+        .update(attachments)
+        .set({ expenseId })
+        .where(
+          and(
+            eq(attachments.groupId, input.groupId),
+            inArray(attachments.id, attachmentIds),
+            isNull(attachments.expenseId),
+            eq(attachments.status, "ready"),
+            isNull(attachments.deletedAt),
+            expenseExists,
+          ),
+        ),
+      activityInsert(db, activity, expenseExists),
+    ]);
+    if (inserted.length === 0) {
+      throw new ServiceError(409, "attachment_in_use", "其中一份收據附檔已綁定或已刪除，請重新確認。");
+    }
+  }
+
+  return {
+    id: expenseId,
+    shares: wireShares(draft.convertedShares),
+    convertedAmount: formatMinor(draft.convertedAmount),
+    convertedCurrency: group.defaultCurrency,
+    originalShares: wireShares(draft.originalShares),
+  };
 }
 
 export async function updateExpense(
@@ -382,59 +556,156 @@ export async function updateExpense(
   actor: SessionUser,
   expenseId: string,
   input: ExpenseInput,
+  audit: AuditContext = DEFAULT_AUDIT,
 ) {
-  const { group, members } = await requireMembership(db, input.groupId, actor.userId);
+  const { group, members, actor: actorMember } = await requireMembership(db, input.groupId, actor.userId);
   const current = await loadExpense(db, input.groupId, expenseId);
   if (current.voidedAt) throw new ServiceError(409, "voided", "作廢的支出不能再改。");
   const draft = prepareExpense(group.defaultCurrency, members, input);
+  const attachmentIds = input.attachmentIds !== undefined ? [...new Set(input.attachmentIds)] : undefined;
+  if (attachmentIds && attachmentIds.length > 0) {
+    await validateAttachmentsForExpense(db, input.groupId, expenseId, attachmentIds);
+  }
   const now = new Date();
-  await db.batch([
-    db.delete(expenseShares).where(eq(expenseShares.expenseId, expenseId)),
+  const category = blankToNull(input.category?.trim());
+  const shares = shareValues(expenseId, draft.convertedShares, draft.originalShares);
+  const activeExpense = and(eq(expenses.id, expenseId), eq(expenses.groupId, input.groupId), isNull(expenses.voidedAt));
+  const activeExists = exists(db.select({ id: expenses.id }).from(expenses).where(activeExpense));
+  const attachmentsGuard =
+    attachmentIds && attachmentIds.length > 0
+      ? sql`(${db
+          .select({ count: sql<number>`count(*)` })
+          .from(attachments)
+          .where(
+            and(
+              eq(attachments.groupId, input.groupId),
+              inArray(attachments.id, attachmentIds),
+              or(isNull(attachments.expenseId), eq(attachments.expenseId, expenseId)),
+              eq(attachments.status, "ready"),
+              isNull(attachments.deletedAt),
+            ),
+          )}) = ${attachmentIds.length}`
+      : undefined;
+  const batchGuard = attachmentsGuard ? sql`(${activeExists} and ${attachmentsGuard})` : activeExists;
+  type BatchStatement = Parameters<LedgerDb["batch"]>[0][number];
+  const restStatements: BatchStatement[] = [
+    db.delete(expenseShares).where(and(eq(expenseShares.expenseId, expenseId), batchGuard)),
+    insertSharesGuarded(db, shares, batchGuard),
+    ...(attachmentIds !== undefined
+      ? [
+          clearUnusedAttachmentLink(db, input.groupId, expenseId, attachmentIds, batchGuard),
+          ...(attachmentIds.length > 0
+            ? [
+                db
+                  .update(attachments)
+                  .set({ expenseId })
+                  .where(
+                    and(
+                      eq(attachments.groupId, input.groupId),
+                      inArray(attachments.id, attachmentIds),
+                      or(isNull(attachments.expenseId), eq(attachments.expenseId, expenseId)),
+                      eq(attachments.status, "ready"),
+                      isNull(attachments.deletedAt),
+                      batchGuard,
+                    ),
+                  ),
+              ]
+            : []),
+        ]
+      : []),
+    activityInsert(
+      db,
+      {
+        groupId: input.groupId,
+        actorUserId: actor.userId,
+        action: "expense.updated",
+        entityType: "expense",
+        entityId: expenseId,
+        summary: expenseSummary(`${actorMember.displayName} 修改支出為`, input, group.defaultCurrency, draft.convertedAmount),
+        audit,
+        createdAt: now,
+        shares: wireShares(draft.convertedShares),
+        payload: {
+          originalAmount: formatMinor(draft.originalAmount),
+          originalCurrency: input.currency,
+          convertedAmount: formatMinor(draft.convertedAmount),
+          convertedCurrency: group.defaultCurrency,
+          ...(input.fxRate ? { fxRate: input.fxRate } : {}),
+        },
+      },
+      batchGuard,
+    ),
+  ];
+
+  const [updated] = await db.batch([
     db
       .update(expenses)
       .set({
         payerMemberId: input.payerId,
-        amountMinor: minorToSafeInteger(draft.amount),
+        amountMinor: minorToSafeInteger(draft.originalAmount),
         currency: input.currency,
-        category: blankToNull(input.category),
+        fxNumerator: input.fxRate?.numerator ?? null,
+        fxDenominator: input.fxRate?.denominator ?? null,
+        convertedAmountMinor: minorToSafeInteger(draft.convertedAmount),
+        category,
         note: blankToNull(input.note),
         splitJson: JSON.stringify(input.split),
         updatedAt: now,
       })
-      .where(eq(expenses.id, expenseId)),
-    db.insert(expenseShares).values(shareValues(expenseId, draft.shares)),
-    activityInsert(db, {
-      groupId: input.groupId,
-      actorUserId: actor.userId,
-      action: "expense.updated",
-      entityType: "expense",
-      entityId: expenseId,
-      summary: expenseSummary("修改支出為", input),
-      createdAt: now,
-      shares: wireShares(draft.shares),
-    }),
+      .where(and(activeExpense, ...(attachmentsGuard ? [attachmentsGuard] : [])))
+      .returning({ id: expenses.id }),
+    ...restStatements,
   ]);
-  return { id: expenseId, shares: wireShares(draft.shares) };
+  if (updated.length === 0) {
+    const [fresh] = await db
+      .select({ voidedAt: expenses.voidedAt })
+      .from(expenses)
+      .where(and(eq(expenses.id, expenseId), eq(expenses.groupId, input.groupId)))
+      .limit(1);
+    if (!fresh) throw new ServiceError(404, "not_found", "找不到這筆支出。");
+    if (fresh.voidedAt) throw new ServiceError(409, "voided", "作廢的支出不能再改。");
+    throw new ServiceError(409, "attachment_in_use", "其中一份收據附檔已綁定或已刪除，請重新確認。");
+  }
+  return {
+    id: expenseId,
+    shares: wireShares(draft.convertedShares),
+    convertedAmount: formatMinor(draft.convertedAmount),
+    convertedCurrency: group.defaultCurrency,
+    originalShares: wireShares(draft.originalShares),
+  };
 }
 
-export async function voidExpense(db: LedgerDb, actor: SessionUser, groupId: string, expenseId: string) {
-  await requireMembership(db, groupId, actor.userId);
+export async function voidExpense(
+  db: LedgerDb,
+  actor: SessionUser,
+  groupId: string,
+  expenseId: string,
+  audit: AuditContext = DEFAULT_AUDIT,
+) {
+  const { actor: actorMember } = await requireMembership(db, groupId, actor.userId);
   const current = await loadExpense(db, groupId, expenseId);
   if (current.voidedAt) throw new ServiceError(409, "already_voided", "這筆支出已經作廢。");
   const now = new Date();
   const amount = formatMinor(minorFromSafeInteger(current.amountMinor));
-  await db.batch([
-    db.update(expenses).set({ voidedAt: now, updatedAt: now }).where(eq(expenses.id, expenseId)),
-    activityInsert(db, {
-      groupId,
-      actorUserId: actor.userId,
-      action: "expense.voided",
-      entityType: "expense",
-      entityId: expenseId,
-      summary: `作廢一筆 ${amount} ${current.currency} 的支出`,
-      createdAt: now,
-    }),
+  const active = and(eq(expenses.id, expenseId), eq(expenses.groupId, groupId), isNull(expenses.voidedAt));
+  const [, result] = await db.batch([
+    activityInsert(
+      db,
+      {
+        groupId,
+        actorUserId: actor.userId,
+        action: "expense.voided",
+        entityType: "expense",
+        entityId: expenseId,
+        summary: `${actorMember.displayName} 作廢一筆 ${amount} ${current.currency} 的支出`,
+        audit,
+        createdAt: now,
+      },
+      exists(db.select({ id: expenses.id }).from(expenses).where(active)),
+    ),
+    db.update(expenses).set({ voidedAt: now, updatedAt: now }).where(active),
   ]);
+  if (result.meta.changes === 0) throw new ServiceError(409, "already_voided", "這筆支出已經作廢。");
   return { id: expenseId, voided: true as const };
 }
 
@@ -460,13 +731,21 @@ export async function getSettlementPlan(db: LedgerDb, actor: SessionUser, groupI
   };
 }
 
-export async function recordSettlement(db: LedgerDb, actor: SessionUser, groupId: string, input: SettlementWrite) {
-  const { group, members } = await requireMembership(db, groupId, actor.userId);
+export async function recordSettlement(
+  db: LedgerDb,
+  actor: SessionUser,
+  groupId: string,
+  input: SettlementWrite,
+  audit: AuditContext = DEFAULT_AUDIT,
+) {
+  const { group, members, actor: actorMember } = await requireMembership(db, groupId, actor.userId);
   if (input.currency !== group.defaultCurrency) {
     throw new ServiceError(422, "currency_mismatch", "結清幣別必須和群組預設幣別相同。");
   }
-  const known = new Set(members.map((member) => member.id));
-  if (!known.has(input.fromMemberId) || !known.has(input.toMemberId)) {
+  const byId = new Map(members.map((member) => [member.id, member]));
+  const fromMember = byId.get(input.fromMemberId);
+  const toMember = byId.get(input.toMemberId);
+  if (!fromMember || !toMember) {
     throw new ServiceError(422, "unknown_member", "付款人與收款人都必須是這個群組的成員。");
   }
 
@@ -491,16 +770,23 @@ export async function recordSettlement(db: LedgerDb, actor: SessionUser, groupId
       action: "settlement.recorded",
       entityType: "settlement",
       entityId: id,
-      summary: `記錄一筆 ${input.amount} ${input.currency} 的結清`,
-      payload: { ...input, note },
+      summary: `${actorMember.displayName} 記錄一筆結清：${fromMember.displayName} 付給 ${toMember.displayName} ${input.amount} ${input.currency}`,
+      audit,
+      payload: { ...input, note, actorMemberId: actorMember.id, actorDisplayName: actorMember.displayName },
       createdAt: now,
     }),
   ]);
   return { id };
 }
 
-export async function voidSettlement(db: LedgerDb, actor: SessionUser, groupId: string, settlementId: string) {
-  await requireMembership(db, groupId, actor.userId);
+export async function voidSettlement(
+  db: LedgerDb,
+  actor: SessionUser,
+  groupId: string,
+  settlementId: string,
+  audit: AuditContext = DEFAULT_AUDIT,
+) {
+  const { actor: actorMember } = await requireMembership(db, groupId, actor.userId);
   const target = and(eq(settlements.id, settlementId), eq(settlements.groupId, groupId));
   const [current] = await db.select().from(settlements).where(target).limit(1);
   if (!current) throw new ServiceError(404, "not_found", "找不到這筆結清。");
@@ -508,17 +794,23 @@ export async function voidSettlement(db: LedgerDb, actor: SessionUser, groupId: 
   const now = new Date();
   const active = and(target, isNull(settlements.voidedAt));
   const amount = formatMinor(minorFromSafeInteger(current.amountMinor));
+  const summary = `${actorMember.displayName} 作廢一筆 ${amount} ${current.currency} 的結清`;
   // Both statements use the same active-row condition so retries cannot duplicate the audit entry.
   const [, result] = await db.batch([
-    activityInsert(db, {
-      groupId,
-      actorUserId: actor.userId,
-      action: "settlement.voided",
-      entityType: "settlement",
-      entityId: settlementId,
-      summary: `作廢一筆 ${amount} ${current.currency} 的結清`,
-      createdAt: now,
-    }, exists(db.select({ id: settlements.id }).from(settlements).where(active))),
+    activityInsert(
+      db,
+      {
+        groupId,
+        actorUserId: actor.userId,
+        action: "settlement.voided",
+        entityType: "settlement",
+        entityId: settlementId,
+        summary,
+        audit,
+        createdAt: now,
+      },
+      exists(db.select({ id: settlements.id }).from(settlements).where(active)),
+    ),
     db.update(settlements).set({ voidedAt: now }).where(active),
   ]);
   if (result.meta.changes === 0) throw new ServiceError(409, "already_voided", "這筆結清已經作廢。");
@@ -531,6 +823,7 @@ export async function updatePaymentProfile(
   groupId: string,
   memberId: string,
   profile: PaymentProfileWrite,
+  audit: AuditContext = DEFAULT_AUDIT,
 ) {
   const allowed = await paymentProfilePermission(db, actor, groupId, memberId);
   const id = newId("pay");
@@ -547,6 +840,7 @@ export async function updatePaymentProfile(
       entityType: "member",
       entityId: memberId,
       summary: "更新收款方式",
+      audit,
       payload: { label: profile.label },
       createdAt: now,
     }, allowed),
@@ -556,28 +850,40 @@ export async function updatePaymentProfile(
   return row;
 }
 
-export async function clearPaymentProfile(db: LedgerDb, actor: SessionUser, groupId: string, memberId: string) {
+export async function clearPaymentProfile(
+  db: LedgerDb,
+  actor: SessionUser,
+  groupId: string,
+  memberId: string,
+  audit: AuditContext = DEFAULT_AUDIT,
+) {
   const allowed = await paymentProfilePermission(db, actor, groupId, memberId);
   const target = eq(paymentProfiles.memberId, memberId);
   const label = db.select({ label: paymentProfiles.label }).from(paymentProfiles).where(target);
   const summary = "清除收款方式";
   const now = new Date();
+  const clientExpr = audit.clientId ? audit.clientId : null;
   const [permission] = await db.batch([
     db.select({ id: groupMembers.id }).from(groupMembers).where(and(eq(groupMembers.id, memberId), allowed)),
-    activityInsert(db, {
-      groupId,
-      actorUserId: actor.userId,
-      action: "payment_profile.cleared",
-      entityType: "member",
-      entityId: memberId,
-      summary,
-      createdAt: now,
-    }, and(allowed, exists(db.select({ id: paymentProfiles.id }).from(paymentProfiles).where(target))),
-    sql`json_object('summary', ${summary}, 'label', (${label}))`),
+    activityInsert(
+      db,
+      {
+        groupId,
+        actorUserId: actor.userId,
+        action: "payment_profile.cleared",
+        entityType: "member",
+        entityId: memberId,
+        summary,
+        audit,
+        createdAt: now,
+      },
+      and(allowed, exists(db.select({ id: paymentProfiles.id }).from(paymentProfiles).where(target))),
+      sql`json_object('summary', ${summary}, 'label', (${label}), 'via', ${audit.via}, 'clientId', ${clientExpr})`,
+    ),
     db.delete(paymentProfiles).where(and(target, allowed)),
   ]);
   if (permission.length === 0) throw paymentProfileForbidden();
-  return { ok: true };
+  return { ok: true as const };
 }
 
 async function paymentProfilePermission(db: LedgerDb, actor: SessionUser, groupId: string, memberId: string) {
@@ -622,22 +928,41 @@ export async function getGroupSummary(db: LedgerDb, actor: SessionUser, groupId:
 export async function listActivity(db: LedgerDb, actor: SessionUser, groupId: string) {
   await requireMembership(db, groupId, actor.userId);
   const rows = await db
-    .select()
+    .select({
+      id: activityLog.id,
+      action: activityLog.action,
+      entityId: activityLog.entityId,
+      payloadJson: activityLog.payloadJson,
+      createdAt: activityLog.createdAt,
+      actorDisplayName: users.displayName,
+    })
     .from(activityLog)
+    .leftJoin(users, eq(activityLog.actorUserId, users.id))
     .where(eq(activityLog.groupId, groupId))
     .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
   return {
-    entries: rows.map((row) => ({
-      id: row.id,
-      action: row.action,
-      entityId: row.entityId,
-      createdAt: row.createdAt.toISOString(),
-      summary: readSummary(row.payloadJson, row.action),
-    })),
+    entries: rows.map((row) => {
+      const meta = readActivityMeta(row.payloadJson, row.action);
+      return {
+        id: row.id,
+        action: row.action,
+        entityId: row.entityId,
+        createdAt: row.createdAt.toISOString(),
+        summary: meta.summary,
+        actorDisplayName: row.actorDisplayName ?? null,
+        via: meta.via,
+        clientId: meta.clientId,
+      };
+    }),
   };
 }
 
-export async function createInvite(db: LedgerDb, actor: SessionUser, groupId: string) {
+export async function createInvite(
+  db: LedgerDb,
+  actor: SessionUser,
+  groupId: string,
+  audit: AuditContext = DEFAULT_AUDIT,
+) {
   await requireMembership(db, groupId, actor.userId);
   const token = crypto.randomUUID();
   const now = new Date();
@@ -659,6 +984,7 @@ export async function createInvite(db: LedgerDb, actor: SessionUser, groupId: st
       entityType: "invite",
       entityId: inviteId,
       summary: "建立邀請連結",
+      audit,
       createdAt: now,
     }),
   ]);
@@ -703,6 +1029,7 @@ export async function acceptInvite(db: LedgerDb, actor: SessionUser, token: stri
         entityType: "member",
         entityId: memberId,
         summary: `用邀請連結加入，成為「${actor.displayName}」`,
+        audit: DEFAULT_AUDIT,
         createdAt: now,
       }),
     ]);
@@ -780,6 +1107,7 @@ export async function claimMember(db: LedgerDb, actor: SessionUser, token: strin
       entityType: "member",
       entityId: member.id,
       summary: `認領了「${member.displayName}」。過去的份額仍掛在同一位成員。`,
+      audit: DEFAULT_AUDIT,
       createdAt: now,
     }),
   ]);
@@ -808,6 +1136,7 @@ export async function rotateClaimLink(db: LedgerDb, actor: SessionUser, groupId:
       entityType: "member",
       entityId: memberId,
       summary: `重新產生「${member.displayName}」的認領連結。舊連結失效。`,
+      audit: DEFAULT_AUDIT,
       createdAt: now,
     }),
   ]);
@@ -870,12 +1199,13 @@ async function loadExpense(db: LedgerDb, groupId: string, expenseId: string): Pr
 }
 
 async function loadLedger(db: LedgerDb, groupId: string) {
-  const [expenseRows, shareRows, settlementRows] = await db.batch([
+  const [expenseRows, shareRows, settlementRows, attachmentRows] = await db.batch([
     db.select().from(expenses).where(eq(expenses.groupId, groupId)).orderBy(asc(expenses.createdAt), asc(expenses.id)),
     db.select({
       expenseId: expenseShares.expenseId,
       memberId: expenseShares.memberId,
       amountMinor: expenseShares.amountMinor,
+      originalAmountMinor: expenseShares.originalAmountMinor,
     })
       .from(expenseShares)
       .innerJoin(expenses, eq(expenses.id, expenseShares.expenseId))
@@ -883,6 +1213,9 @@ async function loadLedger(db: LedgerDb, groupId: string) {
       .orderBy(asc(expenseShares.memberId)),
     db.select().from(settlements).where(eq(settlements.groupId, groupId))
       .orderBy(desc(settlements.createdAt), desc(settlements.id)),
+    db.select().from(attachments)
+      .where(and(eq(attachments.groupId, groupId), eq(attachments.status, "ready"), isNull(attachments.deletedAt)))
+      .orderBy(asc(attachments.createdAt), asc(attachments.id)),
   ]);
   const shares = new Map<string, ShareRow[]>();
   for (const row of shareRows) {
@@ -890,7 +1223,14 @@ async function loadLedger(db: LedgerDb, groupId: string) {
     list.push(row);
     shares.set(row.expenseId, list);
   }
-  return { expenseRows, shares, settlementRows };
+  const attachmentsByExpense = new Map<string, AttachmentRow[]>();
+  for (const row of attachmentRows) {
+    if (!row.expenseId) continue;
+    const list = attachmentsByExpense.get(row.expenseId) ?? [];
+    list.push(row);
+    attachmentsByExpense.set(row.expenseId, list);
+  }
+  return { expenseRows, shares, settlementRows, attachmentsByExpense };
 }
 
 function activeLedger({ expenseRows, shares, settlementRows }: Awaited<ReturnType<typeof loadLedger>>) {
@@ -899,7 +1239,7 @@ function activeLedger({ expenseRows, shares, settlementRows }: Awaited<ReturnTyp
     if (parts.length === 0) throw new ServiceError(500, "missing_shares", "這筆支出沒有份額。");
     return {
       payerId: row.payerMemberId,
-      amount: minorFromSafeInteger(row.amountMinor),
+      amount: minorFromSafeInteger(row.convertedAmountMinor ?? row.amountMinor),
       participantIds: parts.map((part) => part.memberId),
       split: {
         type: "exact" as const,
@@ -941,36 +1281,76 @@ function toSettlementView(row: typeof settlements.$inferSelect): SettlementView 
 }
 
 function prepareExpense(defaultCurrency: string, members: readonly MemberRow[], input: ExpenseInput) {
-  if (input.currency !== defaultCurrency) {
-    throw new ServiceError(422, "currency_mismatch", "支出幣別必須和群組預設幣別相同。換匯是切片 4。");
+  currencyExponent(input.currency);
+  currencyExponent(defaultCurrency);
+  if (input.currency === defaultCurrency && input.fxRate !== undefined) {
+    throw new ServiceError(422, "invalid_rate", "同幣別支出不能填寫匯率。");
   }
+  if (input.currency !== defaultCurrency && input.fxRate === undefined) {
+    throw new ServiceError(422, "invalid_rate", "外幣支出必須提供整數比值匯率 fxRate。");
+  }
+
   const known = new Set(members.map((member) => member.id));
   if (!known.has(input.payerId)) throw new ServiceError(422, "unknown_member", "付款的人不是這個群組的成員。");
   for (const participantId of input.participantIds) {
     if (!known.has(participantId)) throw new ServiceError(422, "unknown_member", "參與者不是這個群組的成員。");
   }
-  const amount = parseUnsignedMinor(input.amount);
-  const shares = allocate({
-    amount,
+
+  const originalAmount = parseUnsignedMinor(input.amount);
+  const allocation = allocateConvertedExpense({
+    amount: originalAmount,
+    fromCurrency: input.currency,
+    toCurrency: defaultCurrency,
+    fxNumerator: input.fxRate?.numerator ?? null,
+    fxDenominator: input.fxRate?.denominator ?? null,
     participantIds: input.participantIds,
     split: toCoreSplit(input.split),
   });
-  const total = sumMinor(shares.map((share) => share.amount));
-  if (toMinorUnits(total) !== toMinorUnits(amount)) {
-    throw new ServiceError(500, "shares_not_conserved", "份額合計與支出金額不一致。");
+  const convertedTotal = sumMinor(allocation.convertedShares.map((share) => share.amount));
+  if (toMinorUnits(convertedTotal) !== toMinorUnits(allocation.convertedAmount)) {
+    throw new ServiceError(500, "shares_not_conserved", "換算後份額合計與支出金額不一致。");
   }
-  return { amount, shares };
+  if (input.currency !== defaultCurrency && toMinorUnits(allocation.convertedAmount) <= 0n) {
+    throw new ServiceError(422, "fx_converted_zero", "外幣換算後的金額不得為 0，請調高金額或確認匯率。");
+  }
+  return allocation;
 }
 
-function shareValues(expenseId: string, shares: readonly { readonly participantId: string; readonly amount: Minor }[]) {
-  return shares.map((share) => ({
-    expenseId,
-    memberId: share.participantId,
-    amountMinor: minorToSafeInteger(share.amount),
-  }));
+function shareValues(
+  expenseId: string,
+  convertedShares: readonly Share[],
+  originalShares: readonly Share[],
+) {
+  const originalByMember = new Map(originalShares.map((s) => [s.participantId, s.amount]));
+  return convertedShares.map((share) => {
+    const orig = originalByMember.get(share.participantId) ?? share.amount;
+    return {
+      expenseId,
+      memberId: share.participantId,
+      amountMinor: minorToSafeInteger(share.amount),
+      originalAmountMinor: minorToSafeInteger(orig),
+    };
+  });
 }
 
-function wireShares(shares: readonly { readonly participantId: string; readonly amount: Minor }[]) {
+function insertSharesGuarded(
+  db: LedgerDb,
+  rows: ReturnType<typeof shareValues>,
+  condition: SQL,
+) {
+  const selects = sql.join(
+    rows.map(
+      (row) =>
+        sql`select ${row.expenseId} as expense_id, ${row.memberId} as member_id, ${row.amountMinor} as amount_minor, ${row.originalAmountMinor} as original_amount_minor`,
+    ),
+    sql` union all `,
+  );
+  return db
+    .insert(expenseShares)
+    .select(sql`select expense_id, member_id, amount_minor, original_amount_minor from (${selects}) where ${condition}`);
+}
+
+function wireShares(shares: readonly Share[]) {
   return shares.map((share) => ({
     participantId: share.participantId,
     amount: formatMinor(share.amount),
@@ -996,12 +1376,24 @@ function toMember(row: {
   };
 }
 
-function toExpenseView(row: ExpenseRow, shares: readonly ShareRow[]) {
+function toExpenseView(
+  row: ExpenseRow,
+  defaultCurrency: string,
+  shares: readonly ShareRow[],
+  attachmentRows: readonly AttachmentRow[],
+) {
+  const convertedMinor = minorFromSafeInteger(row.convertedAmountMinor ?? row.amountMinor);
   return {
     id: row.id,
     payerId: row.payerMemberId,
     amount: formatMinor(minorFromSafeInteger(row.amountMinor)),
     currency: row.currency,
+    convertedAmount: formatMinor(convertedMinor),
+    convertedCurrency: defaultCurrency,
+    fxRate:
+      row.fxNumerator !== null && row.fxDenominator !== null
+        ? { numerator: row.fxNumerator, denominator: row.fxDenominator }
+        : null,
     participantIds: shares.map((share) => share.memberId),
     split: readSplit(row.splitJson),
     category: row.category,
@@ -1011,12 +1403,22 @@ function toExpenseView(row: ExpenseRow, shares: readonly ShareRow[]) {
       participantId: share.memberId,
       amount: formatMinor(minorFromSafeInteger(share.amountMinor)),
     })),
+    originalShares: shares.map((share) => ({
+      participantId: share.memberId,
+      amount: formatMinor(minorFromSafeInteger(share.originalAmountMinor ?? share.amountMinor)),
+    })),
+    attachments: attachmentRows.map(toAttachmentSummary),
   };
 }
 
-function expenseSummary(verb: string, input: ExpenseInput): string {
-  const category = input.category ? `，${input.category}` : "";
-  return `${verb} ${input.amount} ${input.currency}（${splitLabel(input.split.type)}）${category}`;
+function expenseSummary(verb: string, input: ExpenseInput, defaultCurrency: string, convertedAmount: Minor): string {
+  const trimmedCategory = input.category?.trim();
+  const category = trimmedCategory ? `，${trimmedCategory}` : "";
+  const fxNote =
+    input.currency !== defaultCurrency
+      ? `（折合 ${formatMinor(convertedAmount)} ${defaultCurrency}）`
+      : "";
+  return `${verb} ${input.amount} ${input.currency}${fxNote}（${splitLabel(input.split.type)}）${category}`;
 }
 
 function splitLabel(type: SplitWire["type"]): string {
@@ -1062,6 +1464,7 @@ function activityInsert(
     readonly entityType: string;
     readonly entityId: string;
     readonly summary: string;
+    readonly audit: AuditContext;
     readonly createdAt: Date;
     readonly shares?: readonly { readonly participantId: string; readonly amount: string }[];
     readonly payload?: Record<string, unknown>;
@@ -1070,6 +1473,8 @@ function activityInsert(
   payloadJson: string | SQL = JSON.stringify({
     summary: input.summary,
     shares: input.shares ?? null,
+    via: input.audit.via,
+    ...(input.audit.clientId ? { clientId: input.audit.clientId } : {}),
     ...input.payload,
   }),
 ) {
@@ -1089,19 +1494,26 @@ function activityInsert(
     ${values.entityType}, ${values.entityId}, ${payloadJson}, ${values.createdAt.getTime()} where ${condition}`);
 }
 
-function readSummary(payloadJson: string, action: string): string {
+function readActivityMeta(
+  payloadJson: string,
+  action: string,
+): { readonly summary: string; readonly via: "web" | "mcp"; readonly clientId: string | null } {
   try {
     const parsed = JSON.parse(payloadJson) as unknown;
-    if (isRecord(parsed) && typeof parsed.summary === "string" && parsed.summary.length > 0) return parsed.summary;
+    if (isRecord(parsed)) {
+      const summary = typeof parsed.summary === "string" && parsed.summary.length > 0 ? parsed.summary : action;
+      const via = parsed.via === "mcp" ? "mcp" : "web";
+      const clientId = typeof parsed.clientId === "string" && parsed.clientId.length > 0 ? parsed.clientId : null;
+      return { summary, via, clientId };
+    }
   } catch {
-    return action;
+    return { summary: action, via: "web", clientId: null };
   }
-  return action;
+  return { summary: action, via: "web", clientId: null };
 }
 
 function isDuplicateMembership(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("UNIQUE constraint failed") && message.includes("group_members.user_id");
+  return errorHasText(error, "UNIQUE constraint failed") && errorHasText(error, "group_members.user_id");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

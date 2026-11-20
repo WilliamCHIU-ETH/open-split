@@ -11,7 +11,7 @@ export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
   displayName: text("display_name").notNull(),
   primaryEmail: text("primary_email"),
-  // Default deny. MCP OAuth still requires group membership on top of this flag.
+  // Default deny unless allowlisted by MCP_ALLOWED_EMAILS or this DB flag.
   mcpAllowed: integer("mcp_allowed", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
@@ -106,10 +106,10 @@ export const expenses = sqliteTable("expenses", {
     .references(() => groupMembers.id),
   amountMinor: integer("amount_minor").notNull(),
   currency: text("currency").notNull(),
-  // Custom rate against the group default currency: converted = amountMinor * numerator / denominator.
-  // Both null means no conversion. Slice 4. Integers only; never a float rate.
+  // Custom rate against the group default currency: 1 expense major unit = numerator/denominator group major units.
   fxNumerator: integer("fx_numerator"),
   fxDenominator: integer("fx_denominator"),
+  convertedAmountMinor: integer("converted_amount_minor"),
   category: text("category"),
   note: text("note"),
   // Wire split JSON. Null means a slice 1 equal split. Balances use stored shares.
@@ -132,6 +132,7 @@ export const expenseShares = sqliteTable(
       .notNull()
       .references(() => groupMembers.id),
     amountMinor: integer("amount_minor").notNull(),
+    originalAmountMinor: integer("original_amount_minor"),
   },
   (table) => [primaryKey({ columns: [table.expenseId, table.memberId] })],
 );
@@ -174,6 +175,51 @@ export const paymentProfiles = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [uniqueIndex("payment_profiles_member_id").on(table.memberId)],
+);
+
+export const attachments = sqliteTable(
+  "attachments",
+  {
+    id: text("id").primaryKey(),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id),
+    expenseId: text("expense_id").references(() => expenses.id),
+    r2Key: text("r2_key").notNull(),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    sha256: text("sha256").notNull(),
+    status: text("status", { enum: ["pending", "ready"] }).notNull(),
+    uploadTokenHash: text("upload_token_hash"),
+    uploadExpiresAt: integer("upload_expires_at", { mode: "timestamp_ms" }),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    createdByUserId: text("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("attachments_group_id").on(table.groupId),
+    index("attachments_expense_id").on(table.expenseId),
+    uniqueIndex("attachments_r2_key").on(table.r2Key),
+  ],
+);
+
+export const idempotencyKeys = sqliteTable(
+  "idempotency_keys",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    action: text("action").notNull(),
+    key: text("key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    responseJson: text("response_json").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [uniqueIndex("idempotency_user_action_key").on(table.userId, table.action, table.key)],
 );
 
 export const activityLog = sqliteTable("activity_log", {
@@ -246,6 +292,8 @@ export const ledgerTables = [
   expenseShares,
   settlements,
   paymentProfiles,
+  attachments,
+  idempotencyKeys,
   activityLog,
   linePushTargets,
   oauthClients,

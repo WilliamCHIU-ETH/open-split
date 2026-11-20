@@ -41,7 +41,7 @@ function sqliteBinding(sqlite: DatabaseSync) {
 it("records partial settlements, projects summaries, and audits voids and payment profile changes", async () => {
   const sqlite = new DatabaseSync(":memory:");
   try {
-    for (const migration of ["0001_slice1.sql", "0002_slice2.sql", "0003_slice3.sql"]) {
+    for (const migration of ["0001_slice1.sql", "0002_slice2.sql", "0003_slice3.sql", "0004_slice4_5.sql"]) {
       sqlite.exec(readFileSync(new URL(`../migrations/${migration}`, import.meta.url), "utf8"));
     }
     // Seed session hashes so the HTTP flow uses the same session middleware as production.

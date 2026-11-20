@@ -5,7 +5,7 @@ import { summarizeMemberBalances } from "./summary.ts";
 
 export interface Expense {
   readonly payerId: ParticipantId;
-  /** Positive minor units in the expense currency. Conversion belongs to a later slice, still inside core. */
+  /** Positive minor units in the group's default currency (converted via convertMinor when needed). */
   readonly amount: Minor;
   /** People who share the cost. The payer may be absent; that means they paid and owe none of it. */
   readonly participantIds: readonly ParticipantId[];

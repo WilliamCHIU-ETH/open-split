@@ -50,11 +50,11 @@ export function LedgerSummary({ summary, names }: { summary: GroupSummary; names
       {summary.categories.length > 0 ? (
         <ul className="stack mt-3">
           {summary.categories.map(({ category, total }) => {
-            const label = category ?? "未分類";
+            const label = category ?? "未分類（系統預設）";
             const percent = categoryPercent(minor(BigInt(total)), minor(BigInt(totalSpent)));
             const share = percent === 0n && total !== "0" ? "不到 1%" : `${percent}%`;
             return (
-              <li key={category === null ? "uncategorized" : `category:${category}`} className="card settle-card">
+              <li key={category === null ? "system:uncategorized" : `user:${category}`} className="card settle-card">
                 <p className="settle-line">
                   <span>{label}</span>
                   <span className="money">{formatMoney(total, currency)}</span>
