@@ -1,0 +1,18 @@
+{
+  "name": "@open-split/eslint-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "8.73.0",
+    "eslint": "9.39.5",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  }
+}

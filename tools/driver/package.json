@@ -1,0 +1,21 @@
+{
+  "name": "@open-split/driver",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-strip-types src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@open-split/auth": "workspace:*",
+    "@open-split/contracts": "workspace:*",
+    "@open-split/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  }
+}

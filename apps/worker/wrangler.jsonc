@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "open-split",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-20",
+  // Node.js compatibility is already on for this date. Do not set nodejs_compat;
+  // workerd rejects that flag once the compatibility date enables it.
+  // database_id is a placeholder. Replace it with `wrangler d1 create open-split` before the first deploy.
+  // Do not put real secrets in this file. Local secrets belong in .dev.vars.
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+  // Top-level vars are what `wrangler deploy` ships. Fake login stays off.
+  // Local `wrangler dev` overrides these from .dev.vars, which is not uploaded.
+  "vars": {
+    "ENVIRONMENT": "production",
+    "AUTH_DEV_IDENTITIES": "false"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "open-split",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
