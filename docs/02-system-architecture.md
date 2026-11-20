@@ -25,9 +25,9 @@ flowchart LR
 - `packages/core`：純函式。沒有 Workers、D1、檔案或網路。網頁預覽與 MCP 寫入都呼叫它，避免兩套分帳。
 - `packages/contracts`：唯一可以定義 Zod schema 的地方。HTTP 與 MCP 共用。
 - `packages/auth`：登入提供者介面，以及「假身份不得出現在正式設定」的純判斷。它不讀檔、不連 LINE。
-- `apps/worker`：Hono 路由、Drizzle、D1、稍後的服務層。現在只有存活檢查與 501。
+- `apps/worker`：Hono 路由、Drizzle、D1、服務層。切片 1 會把平均分帳寫進 D1。還沒做的路徑仍回 501。
 - `apps/web`：帳本介面。不匯入 Worker、不碰 D1、不匯入 `@open-split/auth`（假登入不能進前端 bundle，也不能進 LIFF）。
-- `tools/driver`：代理人與 CI 用來跑「登入 → 建群 → 記帳 → 分享連結」的本機驅動。它寫 JSON 檔，不打正式 API。
+- `tools/driver`：代理人與 CI 用來跑「登入 → 建群 → 記帳 → 分享連結」的本機驅動。切片 1 起打本機 Worker。狀態檔只記工作階段，帳在 D1。
 
 依賴方向由 dependency-cruiser 檢查。違反時的說明在 `.dependency-cruiser.cjs` 的 `comment`。
 
@@ -53,7 +53,7 @@ LIFF 使用打開它的那個人的 LINE 身份。在 LIFF 裡記帳就是在用
 
 - `wrangler.jsonc` 的頂層 `vars` 是 `wrangler deploy` 會送出去的值，必須是 `ENVIRONMENT=production`、`AUTH_DEV_IDENTITIES=false`。任何環境把旗標打開，`pnpm test` 裡的設定檢查會失敗。
 - 本機 `wrangler dev` 只從 `apps/worker/.dev.vars` 覆蓋。這個檔不進版控、不會上傳。範例在 `apps/worker/.dev.vars.example`，含測試用 LINE Login channel id、channel secret、LIFF id。
-- driver 的 `login --as alice` 直接呼叫假身份提供者，不經過 HTTP。`--environment production` 會被同一個守衛拒絕。
+- driver 的 `login --as alice` 先在本機呼叫假身份提供者，所以 `--environment production` 在送出 HTTP 之前就會被同一個守衛拒絕。通過之後才向 Worker 換工作階段，帳本資料才進得了 D1。
 
 OAuth 程式碼交換、LINE token、LIFF SDK 都不在這一次。介面與守衛先在。
 
@@ -61,7 +61,7 @@ OAuth 程式碼交換、LINE token、LIFF SDK 都不在這一次。介面與守�
 
 D1 是唯一的帳本資料庫。目標表在 `apps/worker/src/db/schema.ts`，說明在[程式設計](03-program-design.md)。金額欄位是整數最小貨幣單位，不是 REAL。
 
-遷移按切片加。schema 檔可以走在遷移前面，但沒有該切片之前不要寫查詢。
+遷移按切片加。schema 檔可以走在遷移前面。切片 1 只查它自己遷移過的表。
 
 ## 可觀察性
 

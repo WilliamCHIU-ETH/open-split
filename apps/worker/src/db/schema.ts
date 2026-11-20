@@ -31,15 +31,19 @@ export const authIdentities = sqliteTable(
   (table) => [uniqueIndex("auth_identities_provider_subject").on(table.provider, table.subject)],
 );
 
-export const sessions = sqliteTable("sessions", {
-  id: text("id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id),
-  tokenHash: text("token_hash").notNull(),
-  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [uniqueIndex("sessions_token_hash").on(table.tokenHash)],
+);
 
 export const groups = sqliteTable("groups", {
   id: text("id").primaryKey(),
@@ -65,19 +69,23 @@ export const groupMembers = sqliteTable("group_members", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
-export const inviteLinks = sqliteTable("invite_links", {
-  id: text("id").primaryKey(),
-  groupId: text("group_id")
-    .notNull()
-    .references(() => groups.id),
-  tokenHash: text("token_hash").notNull(),
-  expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
-  revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
-  createdByUserId: text("created_by_user_id")
-    .notNull()
-    .references(() => users.id),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
+export const inviteLinks = sqliteTable(
+  "invite_links",
+  {
+    id: text("id").primaryKey(),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    createdByUserId: text("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [uniqueIndex("invite_links_token_hash").on(table.tokenHash)],
+);
 
 export const expenses = sqliteTable("expenses", {
   id: text("id").primaryKey(),

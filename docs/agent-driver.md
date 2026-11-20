@@ -1,6 +1,6 @@
 # 驗收驅動
 
-`tools/driver` 是代理人必須真的跑過的程式，不是說明書。它現在寫本機 JSON，呼叫 `@open-split/core` 與 `@open-split/auth`。它不是產品 API。切片 1 之後，同一組指令要改打 Worker，輸出的鍵名保持不變，PR 才比得出來。
+`tools/driver` 是代理人必須真的跑過的程式，不是說明書。切片 1 起，帳本指令打本機 Worker 與 D1。`demo` 仍只算數學、不寫檔。輸出的鍵名與切片 0 相同，另外會多印修改、作廢與份額合計。
 
 ## 怎麼跑
 
@@ -33,7 +33,16 @@ pnpm driver login --as alice --environment production
 
 必須失敗。正式環境不接受假登入。
 
-`accept` 會做完：以 alice 登入、建立群組、加入虛擬成員 Bob、平均分 3000、印餘額與結清方案、建立邀請連結。邀請連結不是 `liff.shareTargetPicker()`。那個屬於切片 6。
+`accept` 會做完：bob 與 alice 以假身份登入、alice 建立群組、加入 bob 與一個虛擬成員、平均分 3000、把金額改成 3600、作廢另一筆、印餘額與結清方案、建立邀請連結。邀請連結不是 `liff.shareTargetPicker()`。那個屬於切片 6。認領邀請也還沒做。
+
+先啟動本機 Worker（`.dev.vars` 要打開假身份，並套用遷移）：
+
+```sh
+cp apps/worker/.dev.vars.example apps/worker/.dev.vars
+pnpm --filter @open-split/worker dev
+```
+
+`OPEN_SPLIT_API_URL` 可換掉預設的 `http://127.0.0.1:8787`。
 
 ## PR 要貼什麼
 

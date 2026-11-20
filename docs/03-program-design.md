@@ -26,7 +26,7 @@
 | `oauth_authorization_codes` | 授權碼與 PKCE，只存雜湊 |
 | `oauth_access_tokens` | 存取權杖雜湊 |
 
-遷移從切片 1 開始，按那一片需要的表加。這次沒有查詢。
+遷移從切片 1 開始，按那一片需要的表加。切片 1 的遷移含使用者、工作階段、群組、成員、支出、份額、活動紀錄與邀請。結清與 OAuth 的表仍只在 schema，還沒有查詢。
 
 ## 帳本核心
 
@@ -118,7 +118,7 @@ function transferBound(participantCount: number): number;
 }
 ```
 
-HTTP 路徑的預定清單在 `plannedHttpRoutes`。除了 `GET /health`，目前都回 501。
+HTTP 路徑的預定清單在 `plannedHttpRoutes`。切片 1 的群組、平均分支出、餘額與活動紀錄不再回 501。記錄結清仍回 501。
 
 ## 登入介面
 
@@ -152,6 +152,6 @@ function auditWranglerConfig(config: unknown): readonly {
 
 `createDevLineProvider()` 與 `createDevGoogleProvider()` 是僅有的假身份。正式提供者以後補上授權碼交換，不補 `signInAs`。
 
-## 這次故意不做
+## 還沒做
 
-服務層、D1 查詢、遷移執行、OAuth、LIFF SDK、Flex Message、官方帳號 push。切片順序見 [04](04-vertical-slices.md)。
+OAuth、MCP 傳輸、LIFF SDK、Flex Message、官方帳號 push、不平均分法、多幣別、結清寫入、邀請認領。切片順序見 [04](04-vertical-slices.md)。
