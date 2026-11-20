@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -22,6 +22,51 @@ describe("driver", () => {
     expect(output.stdout).toContain("invariant.transfer_bound: pass");
     expect(output.stdout).toContain("invariant.settled_to_zero: pass");
     expect(output.stdout).toContain("invite_path: /invite/");
+  });
+
+  it("exercises the group created in this run when the state file already has one", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
+    directories.push(dir);
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      statePath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          session: null,
+          groups: [
+            {
+              id: "grp_old",
+              name: "舊群",
+              currency: "TWD",
+              createdBySubject: "dev-line:someone",
+              members: [{ id: "mem_old", name: "Old", virtual: false, subject: "dev-line:someone" }],
+              expenses: [],
+              invites: [],
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const output = await capture(["accept", "--state", statePath]);
+    expect(output.exitCode, output.stderr).toBe(0);
+    expect(output.stdout).not.toContain("group_id: grp_old");
+
+    const saved = JSON.parse(await readFile(statePath, "utf8")) as {
+      groups: { id: string; currency: string; expenses: unknown[]; invites: unknown[]; members: unknown[] }[];
+    };
+    const oldGroup = saved.groups.find((group) => group.id === "grp_old");
+    const created = saved.groups.find((group) => group.id !== "grp_old");
+    expect(oldGroup?.expenses).toEqual([]);
+    expect(oldGroup?.invites).toEqual([]);
+    expect(oldGroup?.members).toHaveLength(1);
+    expect(created?.currency).toBe("JPY");
+    expect(created?.members).toHaveLength(2);
+    expect(created?.expenses).toHaveLength(1);
+    expect(created?.invites).toHaveLength(1);
   });
 
   it("signs bob in with the secondary Google provider", async () => {

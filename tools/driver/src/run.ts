@@ -86,13 +86,15 @@ async function runAccept(io: DriverIo, statePath: string): Promise<void> {
   io.stdout("command: accept");
   const state = await loadState(statePath);
   await dispatch(["login", "--as", "alice"], state, io);
+  const groupsBefore = new Set(state.groups.map((group) => group.id));
   await dispatch(["create-group", "--name", "京都週末", "--currency", "JPY"], state, io);
-  const group = state.groups[0];
+  const group = state.groups.find((item) => !groupsBefore.has(item.id));
   if (!group) throw new DriverFailure(2, "accept 沒有建立群組。");
-  const owner = group.members[0];
+  const owner = group.members.find((member) => member.subject === state.session?.subject);
   if (!owner) throw new DriverFailure(2, "accept 沒有建立擁有者。");
+  const membersBefore = new Set(group.members.map((member) => member.id));
   await dispatch(["add-member", "--group", group.id, "--name", "Bob", "--virtual"], state, io);
-  const bob = group.members[1];
+  const bob = group.members.find((member) => !membersBefore.has(member.id));
   if (!bob) throw new DriverFailure(2, "accept 沒有建立虛擬成員。");
   await dispatch(
     [
