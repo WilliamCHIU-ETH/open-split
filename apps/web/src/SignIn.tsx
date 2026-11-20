@@ -5,9 +5,11 @@ import { ApiError, api } from "./api.ts";
 export function SignIn({
   devEnabled,
   onSignedIn,
+  hint,
 }: {
   devEnabled: boolean;
   onSignedIn: (session: CurrentSession) => void;
+  hint?: string | null;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +40,7 @@ export function SignIn({
       {devEnabled ? (
         <form aria-labelledby="page-title" onSubmit={(event) => void onSubmit(event)} noValidate={false}>
           <p id="sign-in-help" className="text-muted">
+            {hint ? `${hint} ` : ""}
             名稱會交給 Worker。只有本機開發環境會建立工作階段。LINE 是主要登入，Google 是次要登入；正式的授權碼交換還沒有接上。
           </p>
           <div className="field">
@@ -63,12 +66,12 @@ export function SignIn({
               登入方式 <span aria-hidden="true">*</span>
             </legend>
             <label className="choice" htmlFor="provider-line">
-              <input id="provider-line" type="radio" name="provider" value="line" defaultChecked required />
-              LINE
+              <input id="provider-line" className="choice-input" type="radio" name="provider" value="line" defaultChecked required />
+              <span>LINE</span>
             </label>
             <label className="choice" htmlFor="provider-google">
-              <input id="provider-google" type="radio" name="provider" value="google" required />
-              Google
+              <input id="provider-google" className="choice-input" type="radio" name="provider" value="google" required />
+              <span>Google</span>
             </label>
           </fieldset>
           {error ? (

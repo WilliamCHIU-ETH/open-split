@@ -1,11 +1,17 @@
 import type {
   ActivityResult,
+  AddMemberResult,
   BalancesResult,
+  ClaimGrant,
+  ClaimPreview,
+  ClaimResult,
   CurrentSession,
   DevUser,
   Group,
   GroupDetail,
-  Member,
+  InvitePreview,
+  JoinResult,
+  SplitWire,
 } from "@open-split/contracts";
 
 export class ApiError extends Error {
@@ -24,6 +30,7 @@ export interface ExpenseDraft {
   readonly amount: string;
   readonly currency: string;
   readonly participantIds: readonly string[];
+  readonly split: SplitWire;
   readonly category?: string;
   readonly note?: string;
 }
@@ -72,16 +79,24 @@ export const api = {
     request<Group & { ownerMemberId: string }>("/api/groups", { method: "POST", body: { name, defaultCurrency } }),
   group: (groupId: string) => request<GroupDetail>(`/api/groups/${groupId}`),
   addMember: (groupId: string, body: { displayName: string; virtual: boolean; userId?: string }) =>
-    request<Member>(`/api/groups/${groupId}/members`, { method: "POST", body }),
+    request<AddMemberResult>(`/api/groups/${groupId}/members`, { method: "POST", body }),
+  rotateClaim: (groupId: string, memberId: string) =>
+    request<ClaimGrant>(`/api/groups/${groupId}/members/${memberId}/claim-link`, { method: "POST" }),
+  previewClaim: (token: string) => request<ClaimPreview>(`/api/claims/${encodeURIComponent(token)}`),
+  claim: (token: string) => request<ClaimResult>(`/api/claims/${encodeURIComponent(token)}`, { method: "POST" }),
+  createInvite: (groupId: string) =>
+    request<{ invitePath: string; token: string }>(`/api/groups/${groupId}/invites`, { method: "POST" }),
+  previewInvite: (token: string) => request<InvitePreview>(`/api/invites/${encodeURIComponent(token)}`),
+  acceptInvite: (token: string) => request<JoinResult>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: "POST" }),
   addExpense: (draft: ExpenseDraft) =>
     request<{ id: string; shares: { participantId: string; amount: string }[] }>(`/api/groups/${draft.groupId}/expenses`, {
       method: "POST",
-      body: { ...draft, split: { type: "equal" } },
+      body: draft,
     }),
   updateExpense: (expenseId: string, draft: ExpenseDraft) =>
     request<{ id: string; shares: { participantId: string; amount: string }[] }>(
       `/api/groups/${draft.groupId}/expenses/${expenseId}`,
-      { method: "PATCH", body: { ...draft, split: { type: "equal" } } },
+      { method: "PATCH", body: draft },
     ),
   voidExpense: (groupId: string, expenseId: string) =>
     request<{ id: string; voided: true }>(`/api/groups/${groupId}/expenses/${expenseId}/void`, { method: "POST" }),

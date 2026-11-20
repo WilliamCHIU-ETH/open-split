@@ -52,7 +52,7 @@ export function Home({ session }: { session: CurrentSession }) {
       <h1 id="page-title" tabIndex={-1}>
         你的群組
       </h1>
-      <p className="text-muted">平均分一筆帳，看每個人的餘額。</p>
+      <p className="text-muted">平均、指定金額、百分比或份數。還沒註冊的朋友可以先記在帳上。</p>
       {error ? <p role="alert">{error}</p> : null}
       {groups === null && !error ? <progress aria-label="正在讀取群組" /> : null}
       {groups?.length === 0 ? <p>還沒有群組。建立第一個，就可以開始記帳。</p> : null}
@@ -91,12 +91,13 @@ export function Home({ session }: { session: CurrentSession }) {
               <label key={currency} className="choice" htmlFor={`currency-${currency}`}>
                 <input
                   id={`currency-${currency}`}
+                  className="choice-input"
                   type="radio"
                   name="currency"
                   value={currency}
                   defaultChecked={currency === "TWD"}
                 />
-                {currency}
+                <span>{currency}</span>
               </label>
             ))}
             <p id="currency-help" className="text-sm text-muted">

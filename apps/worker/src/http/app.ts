@@ -1,10 +1,12 @@
 import { assertDevAuthAllowed, isDevAuthEnvironment, parseAuthEnv } from "@open-split/auth";
 import {
   addMemberInputSchema,
+  claimTokenSchema,
   createGroupInputSchema,
   devSignInSchema,
   expenseInputSchema,
   idSchema,
+  inviteTokenSchema,
   plannedHttpRoutes,
 } from "@open-split/contracts";
 import { Hono, type Context } from "hono";
@@ -12,8 +14,10 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createDb } from "../db/client.ts";
 import { asServiceError, ServiceError } from "../ledger/errors.ts";
 import {
+  acceptInvite,
   addExpense,
   addMember,
+  claimMember,
   createGroup,
   createInvite,
   deleteSession,
@@ -23,7 +27,10 @@ import {
   listActivity,
   listDevUsers,
   listGroups,
+  previewClaim,
+  previewInvite,
   readSession,
+  rotateClaimLink,
   updateExpense,
   voidExpense,
   type SessionUser,
@@ -179,11 +186,45 @@ export function createApp() {
     return c.json(await listActivity(createDb(c.env.DB), c.get("user"), groupId));
   });
 
+  app.post("/api/groups/:groupId/members/:memberId/claim-link", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const memberId = parseId(c.req.param("memberId"), "memberId");
+    const claim = await rotateClaimLink(createDb(c.env.DB), c.get("user"), groupId, memberId);
+    console.log(JSON.stringify({ message: "member.claim_link_rotated", groupId, memberId }));
+    return c.json(claim);
+  });
+
+  app.get("/api/claims/:token", async (c) => {
+    const token = parseToken(claimTokenSchema, c.req.param("token"));
+    return c.json(await previewClaim(createDb(c.env.DB), c.get("user"), token));
+  });
+
+  app.post("/api/claims/:token", async (c) => {
+    const token = parseToken(claimTokenSchema, c.req.param("token"));
+    const result = await claimMember(createDb(c.env.DB), c.get("user"), token);
+    console.log(JSON.stringify({ message: "member.claimed", groupId: result.groupId, memberId: result.member.id }));
+    return c.json(result);
+  });
+
   app.post("/api/groups/:groupId/invites", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     const invite = await createInvite(createDb(c.env.DB), c.get("user"), groupId);
     console.log(JSON.stringify({ message: "invite.created", groupId }));
     return c.json(invite, 201);
+  });
+
+  app.get("/api/invites/:token", async (c) => {
+    const token = parseToken(inviteTokenSchema, c.req.param("token"));
+    return c.json(await previewInvite(createDb(c.env.DB), c.get("user"), token));
+  });
+
+  app.post("/api/invites/:token/accept", async (c) => {
+    const token = parseToken(inviteTokenSchema, c.req.param("token"));
+    const result = await acceptInvite(createDb(c.env.DB), c.get("user"), token);
+    console.log(
+      JSON.stringify({ message: "invite.accepted", groupId: result.groupId, alreadyMember: result.alreadyMember }),
+    );
+    return c.json(result, result.alreadyMember ? 200 : 201);
   });
 
   app.all("/api/*", (c) => {
@@ -266,6 +307,19 @@ async function readJsonObject(c: AppContext): Promise<Record<string, unknown>> {
 function parseId(value: string | undefined, name: string): string {
   const parsed = idSchema.safeParse(value);
   if (!parsed.success) throw new ServiceError(400, "invalid_id", `${name} 不是合法的 id。`);
+  return parsed.data;
+}
+
+function parseToken(
+  schema: {
+    safeParse: (
+      value: unknown,
+    ) => { success: true; data: string } | { success: false; error: { issues: readonly { message: string }[] } };
+  },
+  value: string | undefined,
+): string {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new ServiceError(400, "invalid_token", "這條連結不正確。");
   return parsed.data;
 }
 

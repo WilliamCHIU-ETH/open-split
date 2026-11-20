@@ -23,7 +23,7 @@ DISABLE_TELEMETRY=1 pnpm exec modern-web-guidance retrieve "<id>"
 - **LINE 內建瀏覽器與一般瀏覽器都要能記帳。** 不偵測 user agent 來做兩套 UI。
 - **語意 HTML。** 標題、主內容、清單、按鈕與連結各用各的元素。表單控制項要有標籤。鍵盤能到達並看得到焦點。
 - **對比。** 文字與背景要能分開。不要只用顏色傳達狀態。
-- **少依賴。** `apps/web` 的執行期依賴只允許 `react`、`react-dom` 與 `@open-split/contracts`。對話框用 `<dialog>`，popover 用平台的 popover，不要先加元件庫。
+- **少依賴。** `apps/web` 的執行期依賴只允許 `react`、`react-dom`、`@open-split/contracts`，以及預覽分帳用的 `@open-split/core`。對話框用 `<dialog>`，popover 用平台的 popover，不要先加元件庫。
 - **效能。** 建置後的 JS gzip 合計不得超過 150 KiB。現在的空殼大約 96 KiB，剩下的空間不是拿來裝 UI 框架的。
 
 ## 已經會失敗的檢查

@@ -20,12 +20,13 @@ flowchart LR
   driver --> contracts
   driver --> auth
   web --> contracts
+  web --> core
 ```
 
 - `packages/core`：純函式。沒有 Workers、D1、檔案或網路。網頁預覽與 MCP 寫入都呼叫它，避免兩套分帳。
 - `packages/contracts`：唯一可以定義 Zod schema 的地方。HTTP 與 MCP 共用。
 - `packages/auth`：登入提供者介面，以及「假身份不得出現在正式設定」的純判斷。它不讀檔、不連 LINE。
-- `apps/worker`：Hono 路由、Drizzle、D1、服務層。切片 1 會把平均分帳寫進 D1。還沒做的路徑仍回 501。
+- `apps/worker`：Hono 路由、Drizzle、D1、服務層。切片 1 與 2 把分帳、虛擬成員與認領寫進 D1。還沒做的路徑仍回 501。
 - `apps/web`：帳本介面。不匯入 Worker、不碰 D1、不匯入 `@open-split/auth`（假登入不能進前端 bundle，也不能進 LIFF）。
 - `tools/driver`：代理人與 CI 用來跑「登入 → 建群 → 記帳 → 分享連結」的本機驅動。切片 1 起打本機 Worker。狀態檔只記工作階段，帳在 D1。
 
@@ -35,7 +36,7 @@ flowchart LR
 
 網頁與 MCP 都進 Worker 的服務層。服務層做三件事：用契約解析輸入、問資料層這個人是不是群組成員、呼叫 `packages/core` 得到份額與餘額，再把結果寫進 D1。活動紀錄記的是服務層認可的結果，不是客戶端自己算的數字。
 
-瀏覽器若要做即時預覽，只能呼叫 `@open-split/core`。送出時仍以伺服器算出的結果為準。這一層預覽還沒做。
+瀏覽器的即時預覽呼叫 `@open-split/core`。送出時仍以伺服器算出的結果為準。
 
 ## 登入與 MCP 是兩條線
 

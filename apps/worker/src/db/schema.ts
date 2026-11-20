@@ -55,19 +55,28 @@ export const groups = sqliteTable("groups", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
-export const groupMembers = sqliteTable("group_members", {
-  id: text("id").primaryKey(),
-  groupId: text("group_id")
-    .notNull()
-    .references(() => groups.id),
-  displayName: text("display_name").notNull(),
-  // Null until a virtual member is claimed by a real login. See ADR-0004.
-  userId: text("user_id").references(() => users.id),
-  role: text("role", { enum: ["owner", "member"] }).notNull(),
-  claimTokenHash: text("claim_token_hash"),
-  claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
+export const groupMembers = sqliteTable(
+  "group_members",
+  {
+    id: text("id").primaryKey(),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id),
+    displayName: text("display_name").notNull(),
+    // Null until a virtual member is claimed by a real login. See ADR-0004.
+    userId: text("user_id").references(() => users.id),
+    role: text("role", { enum: ["owner", "member"] }).notNull(),
+    claimTokenHash: text("claim_token_hash"),
+    claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("group_members_claim_token_hash").on(table.claimTokenHash),
+    // SQLite treats NULL as distinct, so several virtual members can share an empty user_id.
+    // A real user can hold only one seat in a group, including across a join/claim race.
+    uniqueIndex("group_members_group_user").on(table.groupId, table.userId),
+  ],
+);
 
 export const inviteLinks = sqliteTable(
   "invite_links",
@@ -103,6 +112,8 @@ export const expenses = sqliteTable("expenses", {
   fxDenominator: integer("fx_denominator"),
   category: text("category"),
   note: text("note"),
+  // Wire split JSON. Null means a slice 1 equal split. Balances use stored shares.
+  splitJson: text("split_json"),
   voidedAt: integer("voided_at", { mode: "timestamp_ms" }),
   createdByUserId: text("created_by_user_id")
     .notNull()
