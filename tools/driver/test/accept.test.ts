@@ -229,6 +229,55 @@ describe("driver", () => {
     expect(output.stdout).toContain("invariant.balances_match_splits: pass");
   });
 
+  it("lets the claimant confirm the same member id from their own state file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
+    directories.push(dir);
+    const owner = join(dir, "alice.json");
+    const claimant = join(dir, "dave.json");
+    const login = await capture(["login", "--as", "alice", "--state", owner]);
+    expect(login.exitCode, login.stderr).toBe(0);
+    const group = await capture(["create-group", "--name", "認領", "--currency", "JPY", "--state", owner]);
+    expect(group.exitCode, group.stderr).toBe(0);
+    const groupId = /group_id: (\S+)/.exec(group.stdout)?.[1] ?? "";
+    const ownerId = /owner_member_id: (\S+)/.exec(group.stdout)?.[1] ?? "";
+    const guest = await capture(["add-member", "--group", groupId, "--name", "小美", "--virtual", "--state", owner]);
+    expect(guest.exitCode, guest.stderr).toBe(0);
+    const guestId = /member_id: (\S+)/.exec(guest.stdout)?.[1] ?? "";
+    const token = /claim_path: \/claim\/(\S+)/.exec(guest.stdout)?.[1] ?? "";
+    const expense = await capture([
+      "add-expense",
+      "--group",
+      groupId,
+      "--payer",
+      guestId,
+      "--amount",
+      "1000",
+      "--currency",
+      "JPY",
+      "--participants",
+      `${ownerId},${guestId}`,
+      "--split",
+      "exact",
+      "--amounts",
+      `${ownerId}=400,${guestId}=600`,
+      "--state",
+      owner,
+    ]);
+    expect(expense.exitCode, expense.stderr).toBe(0);
+    const dave = await capture(["login", "--as", "dave", "--state", claimant]);
+    expect(dave.exitCode, dave.stderr).toBe(0);
+    const before = JSON.parse(await readFile(claimant, "utf8")) as { groups: unknown[] };
+    expect(before.groups).toEqual([]);
+    const claim = await capture(["claim", "--token", token, "--state", claimant]);
+    expect(claim.exitCode, claim.stderr).toBe(0);
+    expect(claim.stdout).toContain(`claim.previous_member_id: ${guestId}`);
+    expect(claim.stdout).toContain(`claim.member_id: ${guestId}`);
+    expect(claim.stdout).toContain("invariant.claim_keeps_member_id: pass");
+    expect(claim.stdout).toContain("invariant.claim_keeps_shares: pass");
+    expect(claim.stdout).toContain("activity: member.claimed");
+    expect(claim.stderr).not.toContain("認領改掛到別的成員");
+  });
+
   it("prints the dinner story without a state file", async () => {
     const output = await capture(["demo"]);
     expect(output.exitCode).toBe(0);

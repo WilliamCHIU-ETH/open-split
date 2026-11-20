@@ -41,6 +41,8 @@ pnpm driver login --as alice --environment production
 
 `accept` 會做完：bob 與 alice 以假身份登入、alice 建立群組、加入已登入的 bob、平均分、修改、作廢、建立虛擬成員、指定金額、百分比、份數、排除某人、kenji 認領同一個成員、chao 用邀請連結加入，再印餘額與結清方案。結清仍只印方案，不寫入。邀請連結不是 `liff.shareTargetPicker()`。那個屬於切片 6。
 
+`claim` 先讀伺服器上的成員 id，寫入後再讀一次。兩次必須是同一個 id。認領者可以用自己的狀態檔，不必先有群組紀錄。
+
 先啟動本機 Worker（`.dev.vars` 要打開假身份，並套用遷移）：
 
 ```sh

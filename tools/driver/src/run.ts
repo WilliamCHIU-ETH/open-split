@@ -11,6 +11,7 @@ import {
   activityResultSchema,
   addMemberResultSchema,
   balancesResultSchema,
+  claimPreviewSchema,
   claimResultSchema,
   createGroupResultSchema,
   currentSessionSchema,
@@ -614,30 +615,30 @@ async function claimMember(args: readonly string[], state: DriverState, io: Driv
   const tokenFlag = takeOption(args, "token");
   rejectUnknown(tokenFlag.rest);
   const token = requireOption(tokenFlag.value, "token");
+  const before = parseResponse(
+    claimPreviewSchema,
+    await apiRequest(session.token, `/api/claims/${token}`),
+    "認領預覽",
+  );
   const result = parseResponse(
     claimResultSchema,
     await apiRequest(session.token, `/api/claims/${token}`, { method: "POST" }),
     "認領",
   );
-  const group = state.groups.find((item) => item.id === result.groupId);
-  const index = group?.members.findIndex((member) => member.id === result.member.id) ?? -1;
-  const previous = index >= 0 ? group?.members[index] : undefined;
-  if (group && index >= 0) {
-    group.members[index] = {
-      id: result.member.id,
-      name: result.member.displayName,
-      virtual: result.member.virtual,
-      subject: session.subject,
-      claimToken: null,
-    };
-  }
   const detail = parseResponse(
     groupDetailSchema,
     await apiRequest(session.token, `/api/groups/${result.groupId}`),
     "群組",
   );
-  const sharesStay = detail.expenses.some((expense) =>
-    expense.shares.some((share) => share.participantId === result.member.id),
+  const seated = detail.members.find((member) => member.id === before.memberId);
+  const samePerson =
+    before.memberId === result.member.id &&
+    seated?.id === result.member.id &&
+    seated.userId === session.userId &&
+    seated.virtual === false &&
+    result.member.virtual === false;
+  const sharesStay = detail.expenses.every((expense) =>
+    expense.shares.every((share) => share.participantId !== before.memberId || share.participantId === result.member.id),
   );
   const activity = parseResponse(
     activityResultSchema,
@@ -647,7 +648,18 @@ async function claimMember(args: readonly string[], state: DriverState, io: Driv
   const claimed = activity.entries.find(
     (entry) => entry.action === "member.claimed" && entry.entityId === result.member.id,
   );
-  const samePerson = previous !== undefined && previous.id === result.member.id && result.member.virtual === false;
+  const group = state.groups.find((item) => item.id === result.groupId);
+  const index = group?.members.findIndex((member) => member.id === result.member.id) ?? -1;
+  if (group && index >= 0) {
+    group.members[index] = {
+      id: result.member.id,
+      name: result.member.displayName,
+      virtual: result.member.virtual,
+      subject: session.subject,
+      claimToken: null,
+    };
+  }
+  io.stdout(`claim.previous_member_id: ${before.memberId}`);
   io.stdout(`claim.member_id: ${result.member.id}`);
   io.stdout(`claim.group_id: ${result.groupId}`);
   io.stdout(`claim.user_id: ${result.member.userId ?? ""}`);
