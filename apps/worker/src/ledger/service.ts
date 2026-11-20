@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import {
   createDevGoogleProvider,
   createDevLineProvider,
@@ -14,7 +14,7 @@ import {
   computeBalances,
   formatMinor,
   minorFromSafeInteger,
-  simplifyDebts,
+  minorToSafeInteger,
   sumMinor,
   toMinorUnits,
   type Minor,
@@ -194,13 +194,16 @@ export async function createGroup(
 }
 
 export async function listGroups(db: LedgerDb, actor: SessionUser) {
-  const memberships = await db
-    .select({ groupId: groupMembers.groupId })
-    .from(groupMembers)
-    .where(eq(groupMembers.userId, actor.userId));
-  if (memberships.length === 0) return [];
-  const ids = memberships.map((membership) => membership.groupId);
-  const rows = await db.select().from(groups).where(inArray(groups.id, ids)).orderBy(desc(groups.createdAt));
+  const rows = await db
+    .select({
+      id: groups.id,
+      name: groups.name,
+      defaultCurrency: groups.defaultCurrency,
+    })
+    .from(groups)
+    .innerJoin(groupMembers, eq(groupMembers.groupId, groups.id))
+    .where(eq(groupMembers.userId, actor.userId))
+    .orderBy(desc(groups.createdAt));
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
@@ -211,7 +214,7 @@ export async function listGroups(db: LedgerDb, actor: SessionUser) {
 export async function getGroupDetail(db: LedgerDb, actor: SessionUser, groupId: string) {
   const { group, members } = await requireMembership(db, groupId, actor.userId);
   const expenseRows = await loadExpenses(db, groupId);
-  const shares = await loadShares(db, expenseRows.map((row) => row.id));
+  const shares = await loadShares(db, groupId);
   return {
     group: { id: group.id, name: group.name, defaultCurrency: group.defaultCurrency },
     members: members.map(toMember),
@@ -224,20 +227,18 @@ export async function addMember(
   actor: SessionUser,
   input: { readonly groupId: string; readonly displayName: string; readonly virtual: boolean; readonly userId?: string },
 ) {
+  if (input.virtual || input.userId === undefined) {
+    throw new ServiceError(422, "virtual_not_in_slice", "虛擬成員是切片 2。這次只能加入已經登入的人。");
+  }
   const { members } = await requireMembership(db, input.groupId, actor.userId);
+  const linked = await db.select().from(users).where(eq(users.id, input.userId)).limit(1);
+  if (!linked[0]) throw new ServiceError(404, "not_found", "找不到要加入的使用者。請先讓對方在這台機器登入一次。");
+  if (members.some((member) => member.userId === input.userId)) {
+    throw new ServiceError(409, "already_member", "這個人已經在群組裡。");
+  }
   const now = new Date();
   const memberId = newId("mem");
-  let userId: string | null = null;
-  if (!input.virtual) {
-    if (!input.userId) throw new ServiceError(400, "missing_user", "已登入的成員需要 userId。");
-    const linked = await db.select().from(users).where(eq(users.id, input.userId)).limit(1);
-    if (!linked[0]) throw new ServiceError(404, "not_found", "找不到要加入的使用者。請先讓對方在這台機器登入一次。");
-    if (members.some((member) => member.userId === input.userId)) {
-      throw new ServiceError(409, "already_member", "這個人已經在群組裡。");
-    }
-    userId = input.userId;
-  }
-  const summary = input.virtual ? `加入虛擬成員「${input.displayName}」` : `加入成員「${input.displayName}」`;
+  const userId = input.userId;
   await db.batch([
     db.insert(groupMembers).values({
       id: memberId,
@@ -252,10 +253,10 @@ export async function addMember(
     activityInsert(db, {
       groupId: input.groupId,
       actorUserId: actor.userId,
-      action: input.virtual ? "member.virtual_added" : "member.added",
+      action: "member.added",
       entityType: "member",
       entityId: memberId,
-      summary,
+      summary: `加入成員「${input.displayName}」`,
       createdAt: now,
     }),
   ]);
@@ -278,7 +279,7 @@ export async function addExpense(db: LedgerDb, actor: SessionUser, input: Expens
       id: expenseId,
       groupId: input.groupId,
       payerMemberId: input.payerId,
-      amountMinor: persistMinor(draft.amount),
+      amountMinor: minorToSafeInteger(draft.amount),
       currency: input.currency,
       fxNumerator: null,
       fxDenominator: null,
@@ -321,7 +322,7 @@ export async function updateExpense(
       .update(expenses)
       .set({
         payerMemberId: input.payerId,
-        amountMinor: persistMinor(draft.amount),
+        amountMinor: minorToSafeInteger(draft.amount),
         currency: input.currency,
         category: blankToNull(input.category),
         note: blankToNull(input.note),
@@ -372,19 +373,6 @@ export async function getBalances(db: LedgerDb, actor: SessionUser, groupId: str
     currency: group.defaultCurrency,
     balances: nets.map((row) => ({ participantId: row.participantId, net: formatMinor(row.net) })),
     sum: formatMinor(balancesSum(nets)),
-  };
-}
-
-export async function previewSettlement(db: LedgerDb, actor: SessionUser, groupId: string) {
-  await requireMembership(db, groupId, actor.userId);
-  const nets = await projectBalances(db, groupId);
-  const transfers = simplifyDebts(nets);
-  return {
-    transfers: transfers.map((transfer) => ({
-      fromId: transfer.fromId,
-      toId: transfer.toId,
-      amount: formatMinor(transfer.amount),
-    })),
   };
 }
 
@@ -459,10 +447,17 @@ async function loadExpenses(db: LedgerDb, groupId: string): Promise<ExpenseRow[]
   return db.select().from(expenses).where(eq(expenses.groupId, groupId)).orderBy(asc(expenses.createdAt), asc(expenses.id));
 }
 
-async function loadShares(db: LedgerDb, expenseIds: readonly string[]): Promise<Map<string, ShareRow[]>> {
+async function loadShares(db: LedgerDb, groupId: string): Promise<Map<string, ShareRow[]>> {
   const grouped = new Map<string, ShareRow[]>();
-  if (expenseIds.length === 0) return grouped;
-  const rows = await db.select().from(expenseShares).where(inArray(expenseShares.expenseId, [...expenseIds]));
+  const rows = await db
+    .select({
+      expenseId: expenseShares.expenseId,
+      memberId: expenseShares.memberId,
+      amountMinor: expenseShares.amountMinor,
+    })
+    .from(expenseShares)
+    .innerJoin(expenses, eq(expenses.id, expenseShares.expenseId))
+    .where(eq(expenses.groupId, groupId));
   for (const row of rows) {
     const list = grouped.get(row.expenseId) ?? [];
     list.push(row);
@@ -477,7 +472,7 @@ async function loadShares(db: LedgerDb, expenseIds: readonly string[]): Promise<
 async function projectBalances(db: LedgerDb, groupId: string) {
   const expenseRows = await loadExpenses(db, groupId);
   const active = expenseRows.filter((row) => row.voidedAt === null);
-  const shares = await loadShares(db, active.map((row) => row.id));
+  const shares = await loadShares(db, groupId);
   return computeBalances(
     active.map((row) => ({
       payerId: row.payerMemberId,
@@ -517,7 +512,7 @@ function shareValues(expenseId: string, shares: readonly { readonly participantI
   return shares.map((share) => ({
     expenseId,
     memberId: share.participantId,
-    amountMinor: persistMinor(share.amount),
+    amountMinor: minorToSafeInteger(share.amount),
   }));
 }
 
@@ -571,14 +566,6 @@ function expenseSummary(verb: string, input: ExpenseInput): string {
 function blankToNull(value: string | undefined): string | null {
   if (value === undefined || value.length === 0) return null;
   return value;
-}
-
-function persistMinor(value: Minor): number {
-  const units = toMinorUnits(value);
-  if (units > BigInt(Number.MAX_SAFE_INTEGER) || units < 0n) {
-    throw new ServiceError(422, "unsafe_integer", "金額超過可儲存的整數範圍。");
-  }
-  return Number(units);
 }
 
 function activityInsert(

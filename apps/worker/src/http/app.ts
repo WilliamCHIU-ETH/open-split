@@ -23,7 +23,6 @@ import {
   listActivity,
   listDevUsers,
   listGroups,
-  previewSettlement,
   readSession,
   updateExpense,
   voidExpense,
@@ -173,11 +172,6 @@ export function createApp() {
   app.get("/api/groups/:groupId/balances", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     return c.json(await getBalances(createDb(c.env.DB), c.get("user"), groupId));
-  });
-
-  app.get("/api/groups/:groupId/settlement-preview", async (c) => {
-    const groupId = parseId(c.req.param("groupId"), "groupId");
-    return c.json(await previewSettlement(createDb(c.env.DB), c.get("user"), groupId));
   });
 
   app.get("/api/groups/:groupId/activity", async (c) => {

@@ -33,7 +33,7 @@ pnpm driver login --as alice --environment production
 
 必須失敗。正式環境不接受假登入。
 
-`accept` 會做完：bob 與 alice 以假身份登入、alice 建立群組、加入 bob 與一個虛擬成員、平均分 3000、把金額改成 3600、作廢另一筆、印餘額與結清方案、建立邀請連結。邀請連結不是 `liff.shareTargetPicker()`。那個屬於切片 6。認領邀請也還沒做。
+`accept` 會做完：bob 與 alice 以假身份登入、alice 建立群組、加入已登入的 bob、平均分 3000、把金額改成 3600、作廢另一筆、印餘額，再用核心印結清方案、建立邀請連結。虛擬成員與結清寫入不在這一片。邀請連結不是 `liff.shareTargetPicker()`。那個屬於切片 6。認領邀請也還沒做。
 
 先啟動本機 Worker（`.dev.vars` 要打開假身份，並套用遷移）：
 

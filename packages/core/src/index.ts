@@ -13,6 +13,7 @@ export {
   isZeroMinor,
   minor,
   minorFromSafeInteger,
+  minorToSafeInteger,
   subMinor,
   sumMinor,
   toMinorUnits,

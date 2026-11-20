@@ -6,7 +6,6 @@ import type {
   DevUser,
   ExpenseView,
   GroupDetail,
-  SettlementPreview,
 } from "@open-split/contracts";
 import { ApiError, api, type ExpenseDraft } from "./api.ts";
 import { Dialog } from "./Dialog.tsx";
@@ -32,7 +31,6 @@ export function Ledger({
 }) {
   const [detail, setDetail] = useState<GroupDetail | null>(null);
   const [balances, setBalances] = useState<BalancesResult | null>(null);
-  const [preview, setPreview] = useState<SettlementPreview | null>(null);
   const [activity, setActivity] = useState<ActivityResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -45,12 +43,11 @@ export function Ledger({
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    void Promise.all([api.group(groupId), api.balances(groupId), api.preview(groupId), api.activity(groupId)])
-      .then(([nextDetail, nextBalances, nextPreview, nextActivity]) => {
+    void Promise.all([api.group(groupId), api.balances(groupId), api.activity(groupId)])
+      .then(([nextDetail, nextBalances, nextActivity]) => {
         if (cancelled) return;
         setDetail(nextDetail);
         setBalances(nextBalances);
-        setPreview(nextPreview);
         setActivity(nextActivity);
       })
       .catch((caught: unknown) => {
@@ -146,7 +143,7 @@ export function Ledger({
       {status ? <p role="status">{status}</p> : null}
       {!detail && !error ? <progress aria-label="正在讀取帳本" /> : null}
 
-      {detail && balances && preview && activity ? (
+      {detail && balances && activity ? (
         <>
           <section aria-labelledby="balances-title" className="mt-6">
             <h2 id="balances-title">餘額</h2>
@@ -173,23 +170,6 @@ export function Ledger({
               合計 <span className="money">{formatMoney(balances.sum, balances.currency)}</span>
               {balances.sum === "0" ? "，帳是平的。" : "，帳不平。"}
             </p>
-          </section>
-
-          <section aria-labelledby="settle-title" className="mt-8">
-            <h2 id="settle-title">建議轉帳</h2>
-            <p className="text-sm text-muted">這只是建議，還沒寫進帳本。做完這些轉帳，每個人都會歸零。</p>
-            {preview.transfers.length === 0 ? (
-              <p>目前沒有人需要轉帳。</p>
-            ) : (
-              <ol className="stack mt-3">
-                {preview.transfers.map((transfer) => (
-                  <li key={`${transfer.fromId}-${transfer.toId}-${transfer.amount}`} className="card">
-                    {names.get(transfer.fromId) ?? transfer.fromId} 轉給 {names.get(transfer.toId) ?? transfer.toId}{" "}
-                    <span className="money">{formatMoney(transfer.amount, balances.currency)}</span>
-                  </li>
-                ))}
-              </ol>
-            )}
           </section>
 
           <section aria-labelledby="expenses-title" className="mt-8">
@@ -418,7 +398,11 @@ function ExpenseDialog({
                   name="participant"
                   value={member.id}
                   defaultChecked={form.participantIds.includes(member.id)}
-                  onChange={(event) => event.currentTarget.setCustomValidity("")}
+                  onChange={(event) => {
+                    event.currentTarget.form
+                      ?.querySelectorAll<HTMLInputElement>('input[name="participant"]')
+                      .forEach((box) => box.setCustomValidity(""));
+                  }}
                 />
                 {member.displayName}
               </label>
@@ -469,7 +453,6 @@ function MemberDialog({
   onAdded: () => void;
 }) {
   const headingId = useId();
-  const [virtual, setVirtual] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const taken = new Set(members.map((member) => member.userId).filter((id): id is string => id !== null));
@@ -478,21 +461,16 @@ function MemberDialog({
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const userId = String(data.get("userId") ?? "");
+    const user = available.find((item) => item.userId === userId);
     setPending(true);
     setError(null);
     try {
-      if (virtual) {
-        await api.addMember(groupId, { displayName: String(data.get("displayName") ?? "").trim(), virtual: true });
-      } else {
-        const userId = String(data.get("userId") ?? "");
-        const user = available.find((item) => item.userId === userId);
-        await api.addMember(groupId, {
-          displayName: user?.displayName ?? "成員",
-          virtual: false,
-          userId,
-        });
-      }
-      setVirtual(true);
+      await api.addMember(groupId, {
+        displayName: user?.displayName ?? "成員",
+        virtual: false,
+        userId,
+      });
       onAdded();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "沒有加入。");
@@ -511,54 +489,23 @@ function MemberDialog({
       }}
     >
       <form aria-labelledby={headingId} onSubmit={(event) => void onSubmit(event)}>
-        <h2 id={headingId}>加入成員</h2>
-        <fieldset className="field">
-          <legend>哪一種</legend>
-          <label className="choice" htmlFor="member-virtual">
-            <input
-              id="member-virtual"
-              type="radio"
-              name="kind"
-              value="virtual"
-              checked={virtual}
-              onChange={() => setVirtual(true)}
-            />
-            還沒有帳號
+        <h2 id={headingId}>加入已登入的成員</h2>
+        <p id="member-user-help" className="text-sm text-muted">
+          還沒註冊的朋友要等切片 2 才能先記成虛擬成員。
+        </p>
+        <div className="field">
+          <label htmlFor="member-user">
+            選擇的人 <span aria-hidden="true">*</span>
           </label>
-          <label className="choice" htmlFor="member-real">
-            <input
-              id="member-real"
-              type="radio"
-              name="kind"
-              value="real"
-              checked={!virtual}
-              onChange={() => setVirtual(false)}
-            />
-            已在這台機器登入過
-          </label>
-        </fieldset>
-        {virtual ? (
-          <div className="field">
-            <label htmlFor="member-name">
-              顯示名稱 <span aria-hidden="true">*</span>
-            </label>
-            <input id="member-name" name="displayName" required={virtual} maxLength={80} autoComplete="name" />
-          </div>
-        ) : (
-          <div className="field">
-            <label htmlFor="member-user">選擇的人</label>
-            {available.length === 0 ? (
-              <p id="member-user-help">還沒有其他人登入過。請先用另一個名稱登入，再回來加入。</p>
-            ) : null}
-            <select id="member-user" name="userId" required={!virtual} aria-describedby={available.length === 0 ? "member-user-help" : undefined}>
-              {available.map((user) => (
-                <option key={user.userId} value={user.userId}>
-                  {user.displayName}（{user.provider === "line" ? "LINE" : "Google"}）
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+          {available.length === 0 ? <p>還沒有其他人登入過。請先用另一個名稱登入，再回來加入。</p> : null}
+          <select id="member-user" name="userId" required aria-describedby="member-user-help">
+            {available.map((user) => (
+              <option key={user.userId} value={user.userId}>
+                {user.displayName}（{user.provider === "line" ? "LINE" : "Google"}）
+              </option>
+            ))}
+          </select>
+        </div>
         {error ? (
           <p role="alert" tabIndex={-1}>
             {error}

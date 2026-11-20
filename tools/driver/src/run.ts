@@ -20,7 +20,6 @@ import {
   memberSchema,
   parseSignedMinor,
   parseUnsignedMinor,
-  settlementPreviewSchema,
   voidExpenseResultSchema,
   type SplitWire,
 } from "@open-split/contracts";
@@ -35,7 +34,6 @@ import {
   sumMinor,
   toMinorUnits,
   transferBound,
-  type Minor,
   type NetBalance,
 } from "@open-split/core";
 import { apiRequest } from "./api.ts";
@@ -53,7 +51,7 @@ const HELP = `open-split-driver 打本機 Worker（預設 http://127.0.0.1:8787�
   login --as <name> [--provider line|google] [--environment development]
   whoami
   create-group --name <name> [--currency TWD]
-  add-member --group <id> --name <name> (--virtual | --user <userId>)
+  add-member --group <id> --name <name> --user <userId>
   add-expense --group <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--split equal] [--category <text>] [--note <text>]
   update-expense --group <id> --expense <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--category <text>] [--note <text>]
   void-expense --group <id> --expense <id>
@@ -65,8 +63,8 @@ const HELP = `open-split-driver 打本機 Worker（預設 http://127.0.0.1:8787�
 
 金額一律是整數最小貨幣單位。alice 與 bob 是穩定的假身份。
 狀態檔只記工作階段與這次建立的 id，帳本在 D1。預設是 ./.open-split-driver/state.json。
-accept 會跑：bob 與 alice 登入 → 建群 → 加入 bob 與一個虛擬成員 → 平均分帳 → 修改 → 作廢另一筆 → 餘額與結清方案 → 邀請連結。
-指定金額、百分比、份數會被 Worker 拒絕，那是切片 2。`;
+accept 會跑：bob 與 alice 登入 → 建群 → 加入已登入的 bob → 平均分帳 → 修改 → 作廢另一筆 → 餘額，再用核心印結清方案 → 邀請連結。
+虛擬成員、指定金額、百分比、份數會被 Worker 拒絕，那是切片 2。結清只印方案，不寫入。`;
 
 export async function run(argv: readonly string[], io: DriverIo): Promise<number> {
   try {
@@ -119,11 +117,7 @@ async function runAccept(io: DriverIo, statePath: string): Promise<void> {
   await dispatch(["add-member", "--group", group.id, "--name", "Bob", "--user", bob.userId], state, io);
   const bobMember = group.members.find((member) => !beforeBob.has(member.id));
   if (!bobMember) throw new DriverFailure(2, "accept 沒有加入 bob。");
-  const beforeGuest = new Set(group.members.map((member) => member.id));
-  await dispatch(["add-member", "--group", group.id, "--name", "店員", "--virtual"], state, io);
-  const guest = group.members.find((member) => !beforeGuest.has(member.id));
-  if (!guest) throw new DriverFailure(2, "accept 沒有建立虛擬成員。");
-  const participants = `${owner.id},${bobMember.id},${guest.id}`;
+  const participants = `${owner.id},${bobMember.id}`;
   await dispatch(
     [
       "add-expense",
@@ -335,8 +329,8 @@ async function addMember(args: readonly string[], state: DriverState, io: Driver
   const group = requireGroup(state, requireOption(groupFlag.value, "group"));
   const name = requireOption(nameFlag.value, "name");
   if (virtualFlag.present && userFlag.value) throw new DriverFailure(1, "虛擬成員不能同時給 --user。");
-  if (!virtualFlag.present && !userFlag.value) {
-    throw new DriverFailure(1, "請用 --virtual 加還沒註冊的人，或用 --user 連結已登入的人。");
+  if (!userFlag.value) {
+    throw new DriverFailure(1, "請用 --user 連結已登入的人。虛擬成員是切片 2。");
   }
   const member = parseResponse(
     memberSchema,
@@ -454,25 +448,17 @@ async function settle(args: readonly string[], state: DriverState, io: DriverIo)
   rejectUnknown(groupFlag.rest);
   const group = requireGroup(state, requireOption(groupFlag.value, "group"));
   const balances = await printInvariants(session.token, group.id, io);
-  const preview = parseResponse(
-    settlementPreviewSchema,
-    await apiRequest(session.token, `/api/groups/${group.id}/settlement-preview`),
-    "結清方案",
-  );
   const nets = wireBalances(balances.balances);
-  const expected = simplifyDebts(nets);
+  const transfers = simplifyDebts(nets);
   const bound = transferBound(nets.length);
-  io.stdout(`transfer.count: ${String(preview.transfers.length)}`);
+  io.stdout(`transfer.count: ${String(transfers.length)}`);
   io.stdout(`transfer.bound: ${String(bound)}`);
-  io.stdout(`invariant.transfer_bound: ${preview.transfers.length <= bound ? "pass" : "fail"}`);
-  if (preview.transfers.length > bound) throw new DriverFailure(2, "轉帳數超過參與者 − 1。");
-  if (!sameTransfers(preview.transfers, expected)) {
-    throw new DriverFailure(2, "Worker 的結清方案和 @open-split/core 不一致。");
+  io.stdout(`invariant.transfer_bound: ${transfers.length <= bound ? "pass" : "fail"}`);
+  if (transfers.length > bound) throw new DriverFailure(2, "轉帳數超過參與者 − 1。");
+  for (const transfer of transfers) {
+    io.stdout(`transfer: ${transfer.fromId} -> ${transfer.toId} ${formatMinor(transfer.amount)}`);
   }
-  for (const transfer of preview.transfers) {
-    io.stdout(`transfer: ${transfer.fromId} -> ${transfer.toId} ${transfer.amount}`);
-  }
-  const cleared = settledToZero(applyTransfers(nets, expected));
+  const cleared = settledToZero(applyTransfers(nets, transfers));
   io.stdout(`invariant.settled_to_zero: ${cleared ? "pass" : "fail"}`);
   if (!cleared) throw new DriverFailure(2, "結清方案沒有讓所有人歸零。");
   io.stdout("note: 這只印出結清方案。把結清寫入帳本是切片 3。");
@@ -518,17 +504,6 @@ function printShares(shares: readonly { participantId: string; amount: string }[
 
 function wireBalances(rows: readonly { participantId: string; net: string }[]): NetBalance[] {
   return rows.map((row) => ({ participantId: row.participantId, net: parseSignedMinor(row.net) }));
-}
-
-function sameTransfers(
-  actual: readonly { fromId: string; toId: string; amount: string }[],
-  expected: readonly { fromId: string; toId: string; amount: Minor }[],
-): boolean {
-  if (actual.length !== expected.length) return false;
-  return actual.every((transfer, index) => {
-    const match = expected[index];
-    return match !== undefined && transfer.fromId === match.fromId && transfer.toId === match.toId && transfer.amount === formatMinor(match.amount);
-  });
 }
 
 function readExpenseFlags(args: readonly string[]) {

@@ -6,7 +6,6 @@ import type {
   Group,
   GroupDetail,
   Member,
-  SettlementPreview,
 } from "@open-split/contracts";
 
 export class ApiError extends Error {
@@ -87,7 +86,6 @@ export const api = {
   voidExpense: (groupId: string, expenseId: string) =>
     request<{ id: string; voided: true }>(`/api/groups/${groupId}/expenses/${expenseId}/void`, { method: "POST" }),
   balances: (groupId: string) => request<BalancesResult>(`/api/groups/${groupId}/balances`),
-  preview: (groupId: string) => request<SettlementPreview>(`/api/groups/${groupId}/settlement-preview`),
   activity: (groupId: string) => request<ActivityResult>(`/api/groups/${groupId}/activity`),
 };
 

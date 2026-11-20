@@ -52,7 +52,7 @@ export function Home({ session }: { session: CurrentSession }) {
       <h1 id="page-title" tabIndex={-1}>
         你的群組
       </h1>
-      <p className="text-muted">平均分一筆帳，看每個人的餘額，以及建議怎麼轉。</p>
+      <p className="text-muted">平均分一筆帳，看每個人的餘額。</p>
       {error ? <p role="alert">{error}</p> : null}
       {groups === null && !error ? <progress aria-label="正在讀取群組" /> : null}
       {groups?.length === 0 ? <p>還沒有群組。建立第一個，就可以開始記帳。</p> : null}

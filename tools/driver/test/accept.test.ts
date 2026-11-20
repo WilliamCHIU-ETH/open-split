@@ -93,8 +93,8 @@ describe("driver", () => {
     expect(output.exitCode, output.stderr).toBe(0);
     expect(output.stdout).toContain("login.subject: dev-line:alice");
     expect(output.stdout).toContain("login.subject: dev-google:bob");
-    expect(output.stdout).toContain("member_virtual: true");
     expect(output.stdout).toContain("member_virtual: false");
+    expect(output.stdout).not.toContain("member_virtual: true");
     expect(output.stdout).toContain("expense_updated:");
     expect(output.stdout).toContain("expense_voided:");
     expect(output.stdout).toContain("invariant.shares_sum_to_amount: pass");
@@ -144,7 +144,7 @@ describe("driver", () => {
     expect(oldGroup?.invites).toEqual([]);
     expect(oldGroup?.members).toHaveLength(1);
     expect(created?.currency).toBe("JPY");
-    expect(created?.members).toHaveLength(3);
+    expect(created?.members).toHaveLength(2);
     expect(created?.expenses).toHaveLength(2);
     expect(created?.invites).toHaveLength(1);
   });
@@ -200,6 +200,20 @@ describe("driver", () => {
       "--state",
       state,
     ]);
+    expect(output.exitCode).not.toBe(0);
+    expect(output.stderr).toContain("切片 2");
+  });
+
+  it("refuses a virtual member until slice 2", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
+    directories.push(dir);
+    const state = join(dir, "state.json");
+    const login = await capture(["login", "--as", "alice", "--state", state]);
+    expect(login.exitCode, login.stderr).toBe(0);
+    const group = await capture(["create-group", "--name", "拒絕虛擬", "--currency", "TWD", "--state", state]);
+    expect(group.exitCode, group.stderr).toBe(0);
+    const groupId = /group_id: (\S+)/.exec(group.stdout)?.[1] ?? "";
+    const output = await capture(["add-member", "--group", groupId, "--name", "店員", "--virtual", "--state", state]);
     expect(output.exitCode).not.toBe(0);
     expect(output.stderr).toContain("切片 2");
   });
