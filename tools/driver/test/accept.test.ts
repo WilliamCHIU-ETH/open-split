@@ -86,11 +86,31 @@ afterEach(async () => {
 });
 
 describe("driver", () => {
-  it("runs the slice 1 ledger against the local worker", async () => {
+  it("runs slices 1 through 3 against the local worker", async () => {
     const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
     directories.push(dir);
     const output = await capture(["accept", "--state", join(dir, "state.json")]);
     expect(output.exitCode, output.stderr).toBe(0);
+    for (const check of [
+      "check.payment_profile_set",
+      "check.other_payment_profile_forbidden",
+      "invariant.partial_balances_sum_to_zero",
+      "check.partial_settlement_changes_balances",
+      "invariant.void_restores_balances",
+      "check.activity.settlement.recorded",
+      "check.activity.settlement.voided",
+      "check.non_member_settlement_forbidden",
+      "check.settlement_currency_mismatch",
+      "invariant.preview_settled_to_zero",
+      "invariant.summary_matches_balances",
+      "invariant.categories_sum_to_total",
+    ]) {
+      expect(output.stdout).toContain(`${check}: pass`);
+    }
+    expect(output.stdout).toMatch(/invariant\.preview_settled_to_zero: pass\n(?:settlement_id: \S+\n)+invariant\.settled_to_zero: pass/);
+    expect(output.stdout).toContain("check.other_payment_profile_forbidden.status: 403");
+    expect(output.stdout).toContain("check.non_member_settlement_forbidden.status: 403");
+    expect(output.stdout).toContain("check.settlement_currency_mismatch.status: 422");
     expect(output.stdout).toContain("login.subject: dev-line:alice");
     expect(output.stdout).toContain("login.subject: dev-google:bob");
     expect(output.stdout).toContain("login.subject: dev-line:kenji");
@@ -320,6 +340,7 @@ function execWrangler(args: readonly string[]): Promise<void> {
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
+    server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") {

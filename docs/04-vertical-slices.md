@@ -26,7 +26,7 @@ Driver：`add-expense --split exact|percentage|shares`，以及 `add-member --vi
 
 使用者看到建議轉帳（人數減 1 以內），並能把一筆結清寫進帳，餘額隨之歸零。可以留下收款方式文字。作廢一筆結清會回到活動紀錄。同時看得到每個人累計付了多少、分到多少，以及每個分類花了多少。那是讀取，不是新的分法。
 
-Driver 的 `settle` 目前只印方案。這一片才寫入。
+Driver：`settle --record` 把方案逐筆寫入，再向伺服器讀餘額確認每人為 0；`record-settlement`、`void-settlement`、`set-payment-profile`、`show-summary` 各自打 Worker。結清只是記帳，不經手付款。幣別必須是群組預設幣別，多幣別仍在切片 4。
 
 ## 4. 多幣別
 

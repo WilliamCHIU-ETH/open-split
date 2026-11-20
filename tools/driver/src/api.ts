@@ -1,5 +1,14 @@
 import { DriverFailure } from "./failure.ts";
 
+export class WorkerFailure extends DriverFailure {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(status >= 500 ? 2 : 1, message);
+    this.status = status;
+  }
+}
+
 export function apiBase(): string {
   return (process.env.OPEN_SPLIT_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 }
@@ -37,7 +46,7 @@ export async function apiRequest(token: string | null, path: string, init?: { me
   }
   if (!response.ok) {
     const detail = isRecord(body) && typeof body.detail === "string" ? body.detail : text;
-    throw new DriverFailure(response.status >= 500 ? 2 : 1, `Worker ${String(response.status)} ${path}：${detail}`);
+    throw new WorkerFailure(response.status, `Worker ${String(response.status)} ${path}：${detail}`);
   }
   return body;
 }

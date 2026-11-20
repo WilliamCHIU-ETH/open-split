@@ -2,11 +2,13 @@ import { useEffect, useRef, type ReactNode, type SyntheticEvent } from "react";
 
 export function Dialog({
   open,
+  pending = false,
   labelledBy,
   onClose,
   children,
 }: {
   open: boolean;
+  pending?: boolean;
   labelledBy: string;
   onClose: (returnValue: string) => void;
   children: ReactNode;
@@ -32,7 +34,7 @@ export function Dialog({
       pressedOutside = outside(event);
     };
     const onUp = (event: PointerEvent) => {
-      if (pressedOutside && outside(event)) dialog.close();
+      if (!pending && pressedOutside && outside(event)) dialog.close();
     };
     dialog.addEventListener("pointerdown", onDown);
     dialog.addEventListener("pointerup", onUp);
@@ -40,7 +42,7 @@ export function Dialog({
       dialog.removeEventListener("pointerdown", onDown);
       dialog.removeEventListener("pointerup", onUp);
     };
-  }, []);
+  }, [pending]);
 
   function handleClose(event: SyntheticEvent<HTMLDialogElement>) {
     const dialog = event.currentTarget;
@@ -50,7 +52,15 @@ export function Dialog({
   }
 
   return (
-    <dialog ref={ref} aria-labelledby={labelledBy} {...{ closedby: "any" }} onClose={handleClose}>
+    <dialog
+      ref={ref}
+      aria-labelledby={labelledBy}
+      {...{ closedby: pending ? "none" : "any" }}
+      onCancel={(event) => {
+        if (pending) event.preventDefault();
+      }}
+      onClose={handleClose}
+    >
       <div className="dialog-panel">{children}</div>
     </dialog>
   );

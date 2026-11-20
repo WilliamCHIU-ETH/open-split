@@ -26,7 +26,7 @@ flowchart LR
 - `packages/core`：純函式。沒有 Workers、D1、檔案或網路。網頁預覽與 MCP 寫入都呼叫它，避免兩套分帳。
 - `packages/contracts`：唯一可以定義 Zod schema 的地方。HTTP 與 MCP 共用。
 - `packages/auth`：登入提供者介面，以及「假身份不得出現在正式設定」的純判斷。它不讀檔、不連 LINE。
-- `apps/worker`：Hono 路由、Drizzle、D1、服務層。切片 1 與 2 把分帳、虛擬成員與認領寫進 D1。還沒做的路徑仍回 501。
+- `apps/worker`：Hono 路由、Drizzle、D1、服務層。切片 1 到 3 把分帳、虛擬成員、認領、結清與收款方式寫進 D1。還沒做的路徑仍回 501。
 - `apps/web`：帳本介面。不匯入 Worker、不碰 D1、不匯入 `@open-split/auth`（假登入不能進前端 bundle，也不能進 LIFF）。
 - `tools/driver`：代理人與 CI 用來跑「登入 → 建群 → 記帳 → 分享連結」的本機驅動。切片 1 起打本機 Worker。狀態檔只記工作階段，帳在 D1。
 

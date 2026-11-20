@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { expenseInputSchema, expenseResultSchema } from "./expense.ts";
-import { currencyCodeSchema, idSchema, signedMinorSchema, unsignedMinorSchema } from "./money.ts";
+import { currencyCodeSchema, idSchema, signedMinorSchema } from "./money.ts";
+import {
+  paymentProfileUpdateResultSchema,
+  paymentProfileWriteSchema,
+  settlementPreviewSchema,
+  settlementRecordResultSchema,
+  settlementWriteSchema,
+} from "./settlement.ts";
 
 export const groupSchema = z.strictObject({
   id: idSchema,
@@ -45,12 +52,6 @@ export const addMemberInputSchema = z
 export const balanceWireSchema = z.strictObject({
   participantId: idSchema,
   net: signedMinorSchema,
-});
-
-export const transferWireSchema = z.strictObject({
-  fromId: idSchema,
-  toId: idSchema,
-  amount: unsignedMinorSchema,
 });
 
 export const balancesResultSchema = z.strictObject({
@@ -137,19 +138,13 @@ export const mcpToolContracts = [
     name: "preview_settlement",
     slice: "3",
     input: z.strictObject({ groupId: idSchema }),
-    output: z.strictObject({ transfers: z.array(transferWireSchema) }),
+    output: settlementPreviewSchema,
   },
   {
     name: "record_settlement",
     slice: "3",
-    input: z.strictObject({
-      groupId: idSchema,
-      fromMemberId: idSchema,
-      toMemberId: idSchema,
-      amount: unsignedMinorSchema,
-      currency: currencyCodeSchema,
-    }),
-    output: z.strictObject({ id: idSchema }),
+    input: settlementWriteSchema.safeExtend({ groupId: idSchema }),
+    output: settlementRecordResultSchema,
   },
   {
     name: "list_activity",
@@ -160,12 +155,8 @@ export const mcpToolContracts = [
   {
     name: "set_payment_profile",
     slice: "3",
-    input: z.strictObject({
-      memberId: idSchema,
-      label: z.string().min(1).max(40),
-      details: z.string().min(1).max(500),
-    }),
-    output: z.strictObject({ id: idSchema }),
+    input: paymentProfileWriteSchema.extend({ memberId: idSchema }),
+    output: paymentProfileUpdateResultSchema,
   },
 ] as const;
 

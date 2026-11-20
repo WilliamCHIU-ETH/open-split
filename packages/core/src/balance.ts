@@ -1,6 +1,7 @@
-import { allocate, type ParticipantId, type SplitSpec } from "./allocate.ts";
-import { LedgerError, LedgerErrorCode } from "./errors.ts";
-import { minor, sumMinor, toMinorUnits, ZERO_MINOR, type Minor } from "./money.ts";
+import type { ParticipantId, SplitSpec } from "./allocate.ts";
+import { sumMinor, ZERO_MINOR, type Minor } from "./money.ts";
+import type { Transfer } from "./settle.ts";
+import { summarizeMemberBalances } from "./summary.ts";
 
 export interface Expense {
   readonly payerId: ParticipantId;
@@ -16,44 +17,21 @@ export interface NetBalance {
   /**
    * Positive: the group owes this person.
    * Negative: this person owes the group.
-   * Zero: settled for the expenses that were passed in.
+   * Zero: settled for the ledger entries that were passed in.
    */
   readonly net: Minor;
 }
 
 /**
- * Net each person across expenses.
- * `net = amount paid − amount allocated`.
- * For every valid expense the shares sum to the amount, so the nets sum to zero.
- * People who never pay and never share are omitted; their net is implicitly zero.
- * Results are in lexicographic participant-id order.
+ * Net each person across expenses and recorded settlements.
+ * Settlement payers increase their net and receivers decrease theirs.
+ * The nets sum to zero and results are in lexicographic participant-id order.
  */
-export function computeBalances(expenses: readonly Expense[]): readonly NetBalance[] {
-  const nets = new Map<ParticipantId, bigint>();
-
-  for (const expense of expenses) {
-    if (expense.payerId.length === 0) {
-      throw new LedgerError(LedgerErrorCode.invalidParticipant, "Payer id must be non-empty.");
-    }
-    const shares = allocate({
-      amount: expense.amount,
-      participantIds: expense.participantIds,
-      split: expense.split,
-    });
-    const paid = nets.get(expense.payerId) ?? 0n;
-    nets.set(expense.payerId, paid + toMinorUnits(expense.amount));
-    for (const share of shares) {
-      const current = nets.get(share.participantId) ?? 0n;
-      nets.set(share.participantId, current - toMinorUnits(share.amount));
-    }
-  }
-
-  return [...nets.keys()]
-    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
-    .map((participantId) => ({
-      participantId,
-      net: minor(nets.get(participantId) ?? 0n),
-    }));
+export function computeBalances(
+  expenses: readonly Expense[],
+  settlements: readonly Transfer[] = [],
+): readonly NetBalance[] {
+  return summarizeMemberBalances(expenses, settlements).map(({ participantId, net }) => ({ participantId, net }));
 }
 
 export function balancesSum(balances: readonly NetBalance[]): Minor {

@@ -43,3 +43,14 @@ export {
   transferBound,
   type Transfer,
 } from "./settle.ts";
+
+export {
+  categoryPercent,
+  summarizeCategories,
+  summarizeLedger,
+  summarizeMembers,
+  type MemberBalanceSummary,
+  type CategorizedExpense,
+  type CategorySummary,
+  type MemberSummary,
+} from "./summary.ts";

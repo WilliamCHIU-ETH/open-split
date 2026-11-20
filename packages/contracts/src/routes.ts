@@ -1,7 +1,7 @@
 /**
  * HTTP surface.
  * Slice labels follow docs/04. Expense routes started in slice 1 and now accept every split.
- * Virtual members, claim, and joining by invite are slice 2. Recording a settlement stays on slice 3.
+ * Virtual members, claim, and joining by invite are slice 2. Settlements, payment profiles, and summaries are slice 3.
  * The MCP transport for create_invite stays on slice 6; this list is the web API.
  */
 export const plannedHttpRoutes = [
@@ -26,7 +26,12 @@ export const plannedHttpRoutes = [
   { method: "POST", path: "/api/groups/:groupId/invites", slice: "2", summary: "建立邀請連結" },
   { method: "GET", path: "/api/invites/:token", slice: "2", summary: "看邀請連結" },
   { method: "POST", path: "/api/invites/:token/accept", slice: "2", summary: "用邀請連結加入群組" },
+  { method: "GET", path: "/api/groups/:groupId/settlement-plan", slice: "3", summary: "看建議轉帳" },
   { method: "POST", path: "/api/groups/:groupId/settlements", slice: "3", summary: "記錄結清" },
+  { method: "POST", path: "/api/groups/:groupId/settlements/:settlementId/void", slice: "3", summary: "作廢一筆結清" },
+  { method: "PUT", path: "/api/groups/:groupId/members/:memberId/payment-profile", slice: "3", summary: "設定收款方式" },
+  { method: "DELETE", path: "/api/groups/:groupId/members/:memberId/payment-profile", slice: "3", summary: "清除收款方式" },
+  { method: "GET", path: "/api/groups/:groupId/summary", slice: "3", summary: "看成員與分類摘要" },
 ] as const;
 
 export type PlannedHttpRoute = (typeof plannedHttpRoutes)[number];

@@ -1,5 +1,6 @@
 export const LedgerErrorCode = {
   negativeAmount: "negative_amount",
+  nonPositiveAmount: "non_positive_amount",
   emptyParticipants: "empty_participants",
   duplicateParticipant: "duplicate_participant",
   invalidParticipant: "invalid_participant",

@@ -7,7 +7,9 @@ import {
   expenseInputSchema,
   idSchema,
   inviteTokenSchema,
+  paymentProfileWriteSchema,
   plannedHttpRoutes,
+  settlementWriteSchema,
 } from "@open-split/contracts";
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -18,21 +20,27 @@ import {
   addExpense,
   addMember,
   claimMember,
+  clearPaymentProfile,
   createGroup,
   createInvite,
   deleteSession,
   devSignIn,
   getBalances,
   getGroupDetail,
+  getGroupSummary,
+  getSettlementPlan,
   listActivity,
   listDevUsers,
   listGroups,
   previewClaim,
   previewInvite,
   readSession,
+  recordSettlement,
   rotateClaimLink,
   updateExpense,
+  updatePaymentProfile,
   voidExpense,
+  voidSettlement,
   type SessionUser,
 } from "../ledger/service.ts";
 
@@ -179,6 +187,45 @@ export function createApp() {
   app.get("/api/groups/:groupId/balances", async (c) => {
     const groupId = parseId(c.req.param("groupId"), "groupId");
     return c.json(await getBalances(createDb(c.env.DB), c.get("user"), groupId));
+  });
+
+  app.get("/api/groups/:groupId/settlement-plan", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    return c.json(await getSettlementPlan(createDb(c.env.DB), c.get("user"), groupId));
+  });
+
+  app.post("/api/groups/:groupId/settlements", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const input = parseWith(settlementWriteSchema, await readJson(c));
+    const result = await recordSettlement(createDb(c.env.DB), c.get("user"), groupId, input);
+    console.log(JSON.stringify({ message: "settlement.recorded", groupId, settlementId: result.id }));
+    return c.json(result, 201);
+  });
+
+  app.post("/api/groups/:groupId/settlements/:settlementId/void", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const settlementId = parseId(c.req.param("settlementId"), "settlementId");
+    const result = await voidSettlement(createDb(c.env.DB), c.get("user"), groupId, settlementId);
+    console.log(JSON.stringify({ message: "settlement.voided", groupId, settlementId }));
+    return c.json(result);
+  });
+
+  app.put("/api/groups/:groupId/members/:memberId/payment-profile", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const memberId = parseId(c.req.param("memberId"), "memberId");
+    const profile = parseWith(paymentProfileWriteSchema, await readJson(c));
+    return c.json(await updatePaymentProfile(createDb(c.env.DB), c.get("user"), groupId, memberId, profile));
+  });
+
+  app.delete("/api/groups/:groupId/members/:memberId/payment-profile", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    const memberId = parseId(c.req.param("memberId"), "memberId");
+    return c.json(await clearPaymentProfile(createDb(c.env.DB), c.get("user"), groupId, memberId));
+  });
+
+  app.get("/api/groups/:groupId/summary", async (c) => {
+    const groupId = parseId(c.req.param("groupId"), "groupId");
+    return c.json(await getGroupSummary(createDb(c.env.DB), c.get("user"), groupId));
   });
 
   app.get("/api/groups/:groupId/activity", async (c) => {

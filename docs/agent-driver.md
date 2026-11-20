@@ -20,6 +20,12 @@ pnpm driver claim --token <token>
 pnpm driver join --token <token>
 pnpm driver show-balances --group <id>
 pnpm driver settle --group <id>
+pnpm driver settle --group <id> --record
+pnpm driver record-settlement --group <id> --from <memberId> --to <memberId> --amount <minor> --currency <ccy> [--note <text>]
+pnpm driver void-settlement --group <id> --settlement <id>
+pnpm driver set-payment-profile --group <id> --member <memberId> --label <text> --details <text>
+pnpm driver clear-payment-profile --group <id> --member <memberId>
+pnpm driver show-summary --group <id>
 pnpm driver share-link --group <id>
 ```
 
@@ -39,7 +45,13 @@ pnpm driver login --as alice --environment production
 
 必須失敗。正式環境不接受假登入。
 
-`accept` 會做完：bob 與 alice 以假身份登入、alice 建立群組、加入已登入的 bob、平均分、修改、作廢、建立虛擬成員、指定金額、百分比、份數、排除某人、kenji 認領同一個成員、chao 用邀請連結加入，再印餘額與結清方案。結清仍只印方案，不寫入。邀請連結不是 `liff.shareTargetPicker()`。那個屬於切片 6。
+`accept` 會做完：bob 與 alice 以假身份登入、alice 建立群組、加入已登入的 bob、平均分、修改、作廢、建立虛擬成員、指定金額、百分比、份數、排除某人、kenji 認領同一個成員、chao 用邀請連結加入，再印餘額與結清方案。
+
+切片 3 接著設定收款人的收款方式，確認其他成員嘗試修改時收到 403。驅動程式會顯示伺服器提供的轉帳方案，記錄一筆部分結清，核對餘額總和，再作廢該筆結清，確認原餘額恢復且兩個動作都出現在活動紀錄。非成員記錄結清會收到 403，幣別不符會收到 422。最後寫入所有建議轉帳，確認伺服器餘額全部歸零，並核對唯讀摘要。
+
+`settle` 預設預覽方案。加上 `--record` 後會逐筆寫入方案中的轉帳，再向伺服器查詢餘額以驗證結清。`show-summary` 會印出成員的累計支出、份額、結清付出和收款、淨額，以及各分類與支出總額。它會比對餘額端點與摘要淨額，並核對分類合計。
+
+邀請連結不是 `liff.shareTargetPicker()`。那個屬於切片 6。
 
 `claim` 先讀伺服器上的成員 id，寫入後再讀一次。兩次必須是同一個 id。認領者可以用自己的狀態檔，不必先有群組紀錄。
 

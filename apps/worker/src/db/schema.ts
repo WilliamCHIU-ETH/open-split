@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
  * Target D1 shape. Migrations are applied per vertical slice; this file may be ahead of them.
@@ -136,37 +136,45 @@ export const expenseShares = sqliteTable(
   (table) => [primaryKey({ columns: [table.expenseId, table.memberId] })],
 );
 
-export const settlements = sqliteTable("settlements", {
-  id: text("id").primaryKey(),
-  groupId: text("group_id")
-    .notNull()
-    .references(() => groups.id),
-  fromMemberId: text("from_member_id")
-    .notNull()
-    .references(() => groupMembers.id),
-  toMemberId: text("to_member_id")
-    .notNull()
-    .references(() => groupMembers.id),
-  amountMinor: integer("amount_minor").notNull(),
-  currency: text("currency").notNull(),
-  note: text("note"),
-  voidedAt: integer("voided_at", { mode: "timestamp_ms" }),
-  createdByUserId: text("created_by_user_id")
-    .notNull()
-    .references(() => users.id),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
+export const settlements = sqliteTable(
+  "settlements",
+  {
+    id: text("id").primaryKey(),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id),
+    fromMemberId: text("from_member_id")
+      .notNull()
+      .references(() => groupMembers.id),
+    toMemberId: text("to_member_id")
+      .notNull()
+      .references(() => groupMembers.id),
+    amountMinor: integer("amount_minor").notNull(),
+    currency: text("currency").notNull(),
+    note: text("note"),
+    voidedAt: integer("voided_at", { mode: "timestamp_ms" }),
+    createdByUserId: text("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("settlements_group_id").on(table.groupId)],
+);
 
-export const paymentProfiles = sqliteTable("payment_profiles", {
-  id: text("id").primaryKey(),
-  memberId: text("member_id")
-    .notNull()
-    .references(() => groupMembers.id),
-  label: text("label").notNull(),
-  // Free text the payee shows friends. Not a payment processor token. No money moves.
-  details: text("details").notNull(),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
+export const paymentProfiles = sqliteTable(
+  "payment_profiles",
+  {
+    id: text("id").primaryKey(),
+    memberId: text("member_id")
+      .notNull()
+      .references(() => groupMembers.id),
+    label: text("label").notNull(),
+    // Free text the payee shows friends. Not a payment processor token. No money moves.
+    details: text("details").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [uniqueIndex("payment_profiles_member_id").on(table.memberId)],
+);
 
 export const activityLog = sqliteTable("activity_log", {
   id: text("id").primaryKey(),

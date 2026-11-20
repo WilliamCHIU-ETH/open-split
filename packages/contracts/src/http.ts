@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { expenseInputSchema, shareWireSchema, splitSchema } from "./expense.ts";
-import { groupSchema, memberSchema, transferWireSchema } from "./mcp.ts";
-import { currencyCodeSchema, idSchema, unsignedMinorSchema } from "./money.ts";
+import { balanceWireSchema, groupSchema, memberSchema } from "./mcp.ts";
+import { currencyCodeSchema, idSchema, signedMinorSchema, unsignedMinorSchema } from "./money.ts";
+import { paymentProfileWriteSchema, settlementViewSchema } from "./settlement.ts";
 
 export const devSignInSchema = z.strictObject({
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/, "名稱需以小寫英文開頭。"),
@@ -51,8 +52,10 @@ export const expenseViewSchema = z.strictObject({
 
 export const groupDetailSchema = z.strictObject({
   group: groupSchema,
-  members: z.array(memberSchema),
+  members: z.array(memberSchema.extend({ paymentProfile: paymentProfileWriteSchema.nullable() })),
   expenses: z.array(expenseViewSchema),
+  settlements: z.array(settlementViewSchema),
+  balances: z.array(balanceWireSchema),
 });
 
 export const inviteResultSchema = z.strictObject({
@@ -100,8 +103,22 @@ export const inviteTokenSchema = z.string().uuid();
 
 export const claimTokenSchema = z.string().regex(/^[a-f0-9]{64}$/, "認領連結不正確。");
 
-export const settlementPreviewSchema = z.strictObject({
-  transfers: z.array(transferWireSchema),
+export const groupSummarySchema = z.strictObject({
+  currency: currencyCodeSchema,
+  members: z.array(z.strictObject({
+    memberId: idSchema,
+    paid: unsignedMinorSchema,
+    share: unsignedMinorSchema,
+    settledPaid: unsignedMinorSchema,
+    settledReceived: unsignedMinorSchema,
+    net: signedMinorSchema,
+  })),
+  categories: z.array(z.strictObject({
+    category: z.string().nullable(),
+    total: unsignedMinorSchema,
+    count: z.number().int().positive(),
+  })),
+  totalSpent: unsignedMinorSchema,
 });
 
 export const expenseWriteSchema = expenseInputSchema;
@@ -111,7 +128,7 @@ export type CurrentSession = z.infer<typeof currentSessionSchema>;
 export type DevUser = z.infer<typeof devUserSchema>;
 export type ExpenseView = z.infer<typeof expenseViewSchema>;
 export type GroupDetail = z.infer<typeof groupDetailSchema>;
-export type SettlementPreview = z.infer<typeof settlementPreviewSchema>;
+export type GroupSummary = z.infer<typeof groupSummarySchema>;
 export type AddMemberResult = z.infer<typeof addMemberResultSchema>;
 export type ClaimGrant = z.infer<typeof claimGrantSchema>;
 export type InvitePreview = z.infer<typeof invitePreviewSchema>;
