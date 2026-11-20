@@ -1,1 +1,324 @@
 @import "tailwindcss";
+
+@theme {
+  --color-paper: #f4f0e6;
+  --color-ink: #1c1915;
+  --color-muted: #3f382f;
+  --color-card: #fffdf8;
+  --color-line: #d9d0c1;
+  --color-good: #0c4a32;
+  --color-good-bg: #e5f4ec;
+  --color-bad: #7f1d1d;
+  --color-bad-bg: #fde8e4;
+  --color-focus: #1e3a5f;
+  --color-seal: #8f2d2d;
+  --font-sans: ui-sans-serif, system-ui, "PingFang TC", "Noto Sans CJK TC", "Microsoft JhengHei", sans-serif;
+  --font-serif: ui-serif, "Iowan Old Style", Palatino, "Songti TC", "PMingLiU", serif;
+}
+
+html {
+  color-scheme: light;
+  scroll-padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-serif);
+  text-wrap: balance;
+  line-height: 1.25;
+}
+
+p,
+li {
+  text-wrap: pretty;
+}
+
+:where(a, button, input, select, textarea, summary):focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.skip-link:where(:not(:focus, :active)) {
+  position: absolute;
+  clip-path: inset(50%);
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  white-space: nowrap;
+}
+
+.skip-link:focus {
+  position: fixed;
+  z-index: 30;
+  inset-block-start: max(0.75rem, env(safe-area-inset-top, 0px));
+  inset-inline-start: max(0.75rem, env(safe-area-inset-left, 0px));
+  background: var(--color-card);
+  color: var(--color-ink);
+  padding: 0.5rem 0.75rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  clip-path: inset(50%);
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  white-space: nowrap;
+}
+
+.sheet {
+  width: min(40rem, 100%);
+  margin-inline: auto;
+  padding: 1rem max(1rem, env(safe-area-inset-right, 0px)) 6rem max(1rem, env(safe-area-inset-left, 0px));
+}
+
+.ledger {
+  container: ledger / inline-size;
+}
+
+.money {
+  font-family: var(--font-serif);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.seal {
+  display: grid;
+  place-items: center;
+  inline-size: 2.5rem;
+  block-size: 2.5rem;
+  border: 2px solid var(--color-seal);
+  border-radius: 999px;
+  color: var(--color-seal);
+  font-family: var(--font-serif);
+  flex: none;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.25rem;
+  margin-block-end: 1.25rem;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-block-size: 2.75rem;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  font-size: max(1rem, 1em);
+}
+
+input:not([type="checkbox"], [type="radio"]),
+select,
+textarea {
+  box-sizing: border-box;
+  inline-size: 100%;
+  min-block-size: 3rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #5c5346;
+  border-radius: 0.6rem;
+  background: #fff;
+  color: var(--color-ink);
+}
+
+textarea {
+  min-block-size: 6rem;
+  resize: vertical;
+}
+
+input:user-invalid,
+select:user-invalid,
+textarea:user-invalid {
+  border-color: var(--color-bad);
+  border-width: 2px;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--color-good);
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+}
+
+button,
+.button {
+  min-block-size: 3rem;
+  padding: 0.65rem 1rem;
+  border-radius: 999px;
+  border: 2px solid var(--color-ink);
+  background: var(--color-ink);
+  color: var(--color-card);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.button.secondary,
+button.secondary {
+  background: var(--color-card);
+  color: var(--color-ink);
+}
+
+button.danger {
+  background: var(--color-card);
+  color: var(--color-bad);
+  border-color: var(--color-bad);
+}
+
+button:disabled {
+  opacity: 0.6;
+}
+
+.action-bar {
+  position: fixed;
+  z-index: 5;
+  inset-inline: 0;
+  inset-block-end: 0;
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.75rem max(1rem, env(safe-area-inset-right, 0px)) max(0.75rem, env(safe-area-inset-bottom, 0px))
+    max(1rem, env(safe-area-inset-left, 0px));
+  background: var(--color-paper);
+  border-block-start: 1px solid var(--color-line);
+}
+
+.action-bar button {
+  flex: 1;
+  max-inline-size: 40rem;
+}
+
+a.card {
+  min-block-size: 3rem;
+}
+
+@container ledger (min-width: 36rem) {
+  .balance-figure {
+    font-size: 2.25rem;
+  }
+}
+
+dialog {
+  margin: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  max-inline-size: min(32rem, calc(100vw - 1.5rem));
+}
+
+dialog[open] {
+  display: flex;
+  max-block-size: min(92dvh, 44rem);
+}
+
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  background: rgb(28 25 21 / 0.48);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.dialog-panel {
+  display: flex;
+  flex-direction: column;
+  inline-size: 100%;
+  background: var(--color-card);
+  border: 1px solid var(--color-line);
+  border-radius: 1rem;
+  max-block-size: min(92dvh, 44rem);
+  overflow: hidden;
+}
+
+.dialog-panel form {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  max-block-size: min(92dvh, 44rem);
+  overflow: auto;
+  padding: 1.25rem;
+}
+
+.dialog-actions {
+  position: sticky;
+  inset-block-end: 0;
+  display: flex;
+  gap: 0.75rem;
+  margin-block-start: 0.5rem;
+  padding-block-start: 0.75rem;
+  background: var(--color-card);
+}
+
+.dialog-actions button {
+  flex: 1;
+}
+
+body:has(dialog[open]) .action-bar {
+  visibility: hidden;
+}
+
+.stack > * + * {
+  margin-block-start: 0.75rem;
+}
+
+.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-line);
+  border-radius: 1rem;
+  padding: 1rem;
+}
+
+.tone-owed {
+  background: var(--color-good-bg);
+  color: var(--color-good);
+}
+
+.tone-owes {
+  background: var(--color-bad-bg);
+  color: var(--color-bad);
+}
+
+.tone-even {
+  background: #efeae0;
+  color: var(--color-muted);
+}
+
+@media (pointer: coarse) {
+  button,
+  select,
+  textarea,
+  input:not([type="checkbox"], [type="radio"]),
+  .button {
+    min-block-size: 3rem;
+  }
+}

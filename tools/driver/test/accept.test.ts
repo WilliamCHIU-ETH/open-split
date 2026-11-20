@@ -1,23 +1,103 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { run, type DriverIo } from "../src/run.ts";
 
+const root = fileURLToPath(new URL("../../..", import.meta.url));
 const directories: string[] = [];
+let worker: ChildProcess | undefined;
+let persistDir = "";
+
+beforeAll(async () => {
+  persistDir = await mkdtemp(join(tmpdir(), "open-split-d1-"));
+  const port = await freePort();
+  const inspectorPort = await freePort();
+  await execWrangler([
+    "d1",
+    "migrations",
+    "apply",
+    "open-split",
+    "--local",
+    "--persist-to",
+    persistDir,
+    "--force",
+  ]);
+  const logs: string[] = [];
+  worker = spawn(
+    "pnpm",
+    [
+      "--filter",
+      "@open-split/worker",
+      "exec",
+      "wrangler",
+      "dev",
+      "--port",
+      String(port),
+      "--inspector-port",
+      String(inspectorPort),
+      "--ip",
+      "127.0.0.1",
+      "--local",
+      "--persist-to",
+      persistDir,
+      "--var",
+      "ENVIRONMENT:test",
+      "--var",
+      "AUTH_DEV_IDENTITIES:true",
+      "--log-level",
+      "info",
+      "--show-interactive-dev-session",
+      "false",
+    ],
+    { cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  worker.stdout?.on("data", (chunk: Buffer) => logs.push(chunk.toString()));
+  worker.stderr?.on("data", (chunk: Buffer) => logs.push(chunk.toString()));
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    if (logs.join("").includes("Ready on")) break;
+    if (worker.exitCode !== null) break;
+    await delay(200);
+  }
+  if (!logs.join("").includes("Ready on")) {
+    throw new Error(`Worker 沒有啟動。\n${logs.join("")}`);
+  }
+  process.env.OPEN_SPLIT_API_URL = `http://127.0.0.1:${String(port)}`;
+});
+
+afterAll(async () => {
+  delete process.env.OPEN_SPLIT_API_URL;
+  if (worker?.pid) {
+    try {
+      process.kill(-worker.pid, "SIGTERM");
+    } catch {
+      worker.kill("SIGTERM");
+    }
+  }
+  if (persistDir) await rm(persistDir, { recursive: true, force: true });
+});
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe("driver", () => {
-  it("runs login, group, expense, and share link for alice", async () => {
+  it("runs the slice 1 ledger against the local worker", async () => {
     const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
     directories.push(dir);
     const output = await capture(["accept", "--state", join(dir, "state.json")]);
-    expect(output.exitCode).toBe(0);
+    expect(output.exitCode, output.stderr).toBe(0);
     expect(output.stdout).toContain("login.subject: dev-line:alice");
-    expect(output.stdout).toContain("member_virtual: true");
+    expect(output.stdout).toContain("login.subject: dev-google:bob");
+    expect(output.stdout).toContain("member_virtual: false");
+    expect(output.stdout).not.toContain("member_virtual: true");
+    expect(output.stdout).toContain("expense_updated:");
+    expect(output.stdout).toContain("expense_voided:");
+    expect(output.stdout).toContain("invariant.shares_sum_to_amount: pass");
     expect(output.stdout).toContain("invariant.balances_sum_to_zero: pass");
     expect(output.stdout).toContain("invariant.transfer_bound: pass");
     expect(output.stdout).toContain("invariant.settled_to_zero: pass");
@@ -65,7 +145,7 @@ describe("driver", () => {
     expect(oldGroup?.members).toHaveLength(1);
     expect(created?.currency).toBe("JPY");
     expect(created?.members).toHaveLength(2);
-    expect(created?.expenses).toHaveLength(1);
+    expect(created?.expenses).toHaveLength(2);
     expect(created?.invites).toHaveLength(1);
   });
 
@@ -81,7 +161,7 @@ describe("driver", () => {
       "--state",
       join(dir, "state.json"),
     ]);
-    expect(output.exitCode).toBe(0);
+    expect(output.exitCode, output.stderr).toBe(0);
     expect(output.stdout).toContain("login.subject: dev-google:bob");
   });
 
@@ -89,6 +169,53 @@ describe("driver", () => {
     const output = await capture(["login", "--as", "alice", "--environment", "production"]);
     expect(output.exitCode).not.toBe(0);
     expect(output.stderr).toContain("AUTH_DEV_IDENTITIES");
+  });
+
+  it("refuses an unequal split until slice 2", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
+    directories.push(dir);
+    const state = join(dir, "state.json");
+    const login = await capture(["login", "--as", "alice", "--state", state]);
+    expect(login.exitCode, login.stderr).toBe(0);
+    const group = await capture(["create-group", "--name", "拒絕對分", "--currency", "JPY", "--state", state]);
+    expect(group.exitCode, group.stderr).toBe(0);
+    const groupId = /group_id: (\S+)/.exec(group.stdout)?.[1];
+    const ownerId = /owner_member_id: (\S+)/.exec(group.stdout)?.[1];
+    const output = await capture([
+      "add-expense",
+      "--group",
+      groupId ?? "",
+      "--payer",
+      ownerId ?? "",
+      "--amount",
+      "3000",
+      "--currency",
+      "JPY",
+      "--participants",
+      ownerId ?? "",
+      "--split",
+      "exact",
+      "--amounts",
+      `${ownerId ?? ""}=3000`,
+      "--state",
+      state,
+    ]);
+    expect(output.exitCode).not.toBe(0);
+    expect(output.stderr).toContain("切片 2");
+  });
+
+  it("refuses a virtual member until slice 2", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
+    directories.push(dir);
+    const state = join(dir, "state.json");
+    const login = await capture(["login", "--as", "alice", "--state", state]);
+    expect(login.exitCode, login.stderr).toBe(0);
+    const group = await capture(["create-group", "--name", "拒絕虛擬", "--currency", "TWD", "--state", state]);
+    expect(group.exitCode, group.stderr).toBe(0);
+    const groupId = /group_id: (\S+)/.exec(group.stdout)?.[1] ?? "";
+    const output = await capture(["add-member", "--group", groupId, "--name", "店員", "--virtual", "--state", state]);
+    expect(output.exitCode).not.toBe(0);
+    expect(output.stderr).toContain("切片 2");
   });
 
   it("prints the dinner story without a state file", async () => {
@@ -108,4 +235,45 @@ async function capture(argv: readonly string[]): Promise<{ exitCode: number; std
   };
   const exitCode = await run(argv, io);
   return { exitCode, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
+}
+
+function execWrangler(args: readonly string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("pnpm", ["--filter", "@open-split/worker", "exec", "wrangler", ...args], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    child.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`wrangler ${args.join(" ")} 結束碼 ${String(code)}\n${output}`));
+    });
+  });
+}
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("沒有可用的連接埠。"));
+        return;
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

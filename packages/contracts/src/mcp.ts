@@ -17,6 +17,30 @@ export const memberSchema = z.strictObject({
   virtual: z.boolean(),
 });
 
+export const addMemberInputSchema = z
+  .strictObject({
+    groupId: idSchema,
+    displayName: z.string().min(1).max(80),
+    virtual: z.boolean(),
+    userId: idSchema.optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.virtual && value.userId !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["userId"],
+        message: "虛擬成員不能連結使用者。",
+      });
+    }
+    if (!value.virtual && value.userId === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["userId"],
+        message: "已登入的成員需要 userId。還沒有帳號的人請設 virtual。",
+      });
+    }
+  });
+
 export const balanceWireSchema = z.strictObject({
   participantId: idSchema,
   net: signedMinorSchema,
@@ -28,7 +52,36 @@ export const transferWireSchema = z.strictObject({
   amount: unsignedMinorSchema,
 });
 
+export const balancesResultSchema = z.strictObject({
+  groupId: idSchema,
+  currency: currencyCodeSchema,
+  balances: z.array(balanceWireSchema),
+  sum: signedMinorSchema,
+});
+
+export const activityEntrySchema = z.strictObject({
+  id: idSchema,
+  action: z.string().min(1),
+  entityId: idSchema,
+  createdAt: z.string().min(1),
+  summary: z.string().min(1),
+});
+
+export const activityResultSchema = z.strictObject({
+  entries: z.array(activityEntrySchema),
+});
+
+export const voidExpenseResultSchema = z.strictObject({
+  id: idSchema,
+  voided: z.literal(true),
+});
+
 const emptyInput = z.strictObject({});
+
+export const createGroupInputSchema = z.strictObject({
+  name: z.string().min(1).max(80),
+  defaultCurrency: currencyCodeSchema,
+});
 
 export const mcpToolContracts = [
   {
@@ -40,17 +93,13 @@ export const mcpToolContracts = [
   {
     name: "create_group",
     slice: "1",
-    input: z.strictObject({ name: z.string().min(1).max(80), defaultCurrency: currencyCodeSchema }),
+    input: createGroupInputSchema,
     output: groupSchema,
   },
   {
     name: "add_member",
     slice: "2",
-    input: z.strictObject({
-      groupId: idSchema,
-      displayName: z.string().min(1).max(80),
-      virtual: z.boolean(),
-    }),
+    input: addMemberInputSchema,
     output: memberSchema,
   },
   {
@@ -75,18 +124,13 @@ export const mcpToolContracts = [
     name: "void_expense",
     slice: "1",
     input: z.strictObject({ expenseId: idSchema }),
-    output: z.strictObject({ id: idSchema, voided: z.literal(true) }),
+    output: voidExpenseResultSchema,
   },
   {
     name: "get_balances",
     slice: "1",
     input: z.strictObject({ groupId: idSchema }),
-    output: z.strictObject({
-      groupId: idSchema,
-      currency: currencyCodeSchema,
-      balances: z.array(balanceWireSchema),
-      sum: signedMinorSchema,
-    }),
+    output: balancesResultSchema,
   },
   {
     name: "preview_settlement",
@@ -110,15 +154,7 @@ export const mcpToolContracts = [
     name: "list_activity",
     slice: "1",
     input: z.strictObject({ groupId: idSchema }),
-    output: z.strictObject({
-      entries: z.array(
-        z.strictObject({
-          id: idSchema,
-          action: z.string().min(1),
-          entityId: idSchema,
-        }),
-      ),
-    }),
+    output: activityResultSchema,
   },
   {
     name: "set_payment_profile",
@@ -133,3 +169,7 @@ export const mcpToolContracts = [
 ] as const;
 
 export type McpToolName = (typeof mcpToolContracts)[number]["name"];
+export type BalancesResult = z.infer<typeof balancesResultSchema>;
+export type ActivityResult = z.infer<typeof activityResultSchema>;
+export type Member = z.infer<typeof memberSchema>;
+export type Group = z.infer<typeof groupSchema>;

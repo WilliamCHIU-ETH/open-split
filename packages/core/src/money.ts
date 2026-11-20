@@ -31,6 +31,22 @@ export function minorFromSafeInteger(value: number): Minor {
   return minor(BigInt(value));
 }
 
+/**
+ * The only money → `number` conversion in the engine.
+ * Pair of {@link minorFromSafeInteger}, for a storage boundary such as a D1 INTEGER column.
+ * Callers must not do arithmetic on the returned number.
+ */
+export function minorToSafeInteger(value: Minor): number {
+  const units = toMinorUnits(value);
+  if (units > BigInt(Number.MAX_SAFE_INTEGER) || units < BigInt(Number.MIN_SAFE_INTEGER)) {
+    throw new LedgerError(
+      LedgerErrorCode.unsafeInteger,
+      `Money must be a safe integer number of minor units. Received ${units.toString(10)}.`,
+    );
+  }
+  return Number(units);
+}
+
 export function formatMinor(value: Minor): string {
   return value.toString(10);
 }

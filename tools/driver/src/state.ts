@@ -8,6 +8,8 @@ export interface Session {
   readonly name: string;
   readonly subject: string;
   readonly displayName: string;
+  readonly userId: string;
+  readonly token: string;
 }
 
 export interface MemberRecord {
@@ -24,6 +26,7 @@ export interface ExpenseRecord {
   readonly currency: string;
   readonly participantIds: readonly string[];
   readonly split: SplitWire;
+  voided: boolean;
 }
 
 export interface InviteRecord {

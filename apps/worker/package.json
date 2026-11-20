@@ -7,11 +7,13 @@
     "typecheck": "wrangler types && tsc --noEmit",
     "test": "vitest run",
     "types": "wrangler types",
-    "dev": "wrangler dev"
+    "db:migrate": "wrangler d1 migrations apply open-split --local --force",
+    "dev": "wrangler d1 migrations apply open-split --local --force && wrangler dev"
   },
   "dependencies": {
     "@open-split/auth": "workspace:*",
     "@open-split/contracts": "workspace:*",
+    "@open-split/core": "workspace:*",
     "drizzle-orm": "0.45.4",
     "hono": "4.13.19"
   },

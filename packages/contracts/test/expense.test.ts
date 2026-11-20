@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expenseInputSchema, mcpToolContracts, plannedHttpRoutes } from "../src/index.ts";
+import { addMemberInputSchema, expenseInputSchema, mcpToolContracts, plannedHttpRoutes } from "../src/index.ts";
 
 const dinner = {
   groupId: "grp_kyoto",
@@ -42,6 +42,33 @@ describe("plannedHttpRoutes", () => {
     expect(slice1Tools).toEqual(
       expect.arrayContaining(["create_group", "add_expense", "update_expense", "void_expense", "get_balances", "list_activity"]),
     );
+  });
+});
+
+describe("addMemberInputSchema", () => {
+  it("requires a user id only when the member is not virtual", () => {
+    expect(
+      addMemberInputSchema.safeParse({ groupId: "grp_kyoto", displayName: "店員", virtual: true }).success,
+    ).toBe(true);
+    expect(
+      addMemberInputSchema.safeParse({
+        groupId: "grp_kyoto",
+        displayName: "Bob",
+        virtual: false,
+        userId: "usr_bob",
+      }).success,
+    ).toBe(true);
+    expect(
+      addMemberInputSchema.safeParse({ groupId: "grp_kyoto", displayName: "Bob", virtual: false }).success,
+    ).toBe(false);
+    expect(
+      addMemberInputSchema.safeParse({
+        groupId: "grp_kyoto",
+        displayName: "店員",
+        virtual: true,
+        userId: "usr_bob",
+      }).success,
+    ).toBe(false);
   });
 });
 

@@ -72,6 +72,9 @@ importers:
       '@open-split/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@open-split/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       drizzle-orm:
         specifier: 0.45.4
         version: 0.45.4(@cloudflare/workers-types@5.20261120.1)

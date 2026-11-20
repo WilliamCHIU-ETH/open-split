@@ -7,7 +7,22 @@ import {
   createDevLineProvider,
   type AuthProviderId,
 } from "@open-split/auth";
-import { expenseInputSchema, parseUnsignedMinor, type SplitWire } from "@open-split/contracts";
+import {
+  balancesResultSchema,
+  createGroupResultSchema,
+  devSessionSchema,
+  devUserListSchema,
+  expenseInputSchema,
+  expenseResultSchema,
+  groupDetailSchema,
+  currentSessionSchema,
+  inviteResultSchema,
+  memberSchema,
+  parseSignedMinor,
+  parseUnsignedMinor,
+  voidExpenseResultSchema,
+  type SplitWire,
+} from "@open-split/contracts";
 import {
   applyTransfers,
   balancesSum,
@@ -16,28 +31,30 @@ import {
   minor,
   settledToZero,
   simplifyDebts,
+  sumMinor,
   toMinorUnits,
   transferBound,
-  type Expense,
-  type Minor,
-  type SplitSpec,
+  type NetBalance,
 } from "@open-split/core";
+import { apiRequest } from "./api.ts";
 import { rejectUnknown, requireOption, takeFlag, takeOption } from "./args.ts";
 import { DriverFailure } from "./failure.ts";
-import { loadState, saveState, type DriverState, type GroupRecord, type Session } from "./state.ts";
+import { loadState, saveState, type DriverState, type ExpenseRecord, type GroupRecord, type Session } from "./state.ts";
 
 export interface DriverIo {
   stdout: (line: string) => void;
   stderr: (line: string) => void;
 }
 
-const HELP = `open-split-driver 是驗收用的本機驅動，不是產品 API。
+const HELP = `open-split-driver 打本機 Worker（預設 http://127.0.0.1:8787，可用 OPEN_SPLIT_API_URL 換）。
 
   login --as <name> [--provider line|google] [--environment development]
   whoami
   create-group --name <name> [--currency TWD]
-  add-member --group <id> --name <name> [--virtual]
-  add-expense --group <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--split equal|exact|percentage|shares]
+  add-member --group <id> --name <name> --user <userId>
+  add-expense --group <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--split equal] [--category <text>] [--note <text>]
+  update-expense --group <id> --expense <id> --payer <memberId> --amount <minor> --currency <ISO> --participants <id,id> [--category <text>] [--note <text>]
+  void-expense --group <id> --expense <id>
   show-balances --group <id>
   settle --group <id>
   share-link --group <id>
@@ -45,8 +62,9 @@ const HELP = `open-split-driver 是驗收用的本機驅動，不是產品 API�
   accept
 
 金額一律是整數最小貨幣單位。alice 與 bob 是穩定的假身份。
-狀態檔預設是 ./.open-split-driver/state.json，可用 --state 換掉。
-accept 會跑：登入 alice → 建群 → 加虛擬成員 bob → 平均分帳 → 印餘額與結清方案 → 邀請連結。`;
+狀態檔只記工作階段與這次建立的 id，帳本在 D1。預設是 ./.open-split-driver/state.json。
+accept 會跑：bob 與 alice 登入 → 建群 → 加入已登入的 bob → 平均分帳 → 修改 → 作廢另一筆 → 餘額，再用核心印結清方案 → 邀請連結。
+虛擬成員、指定金額、百分比、份數會被 Worker 拒絕，那是切片 2。結清只印方案，不寫入。`;
 
 export async function run(argv: readonly string[], io: DriverIo): Promise<number> {
   try {
@@ -85,6 +103,9 @@ async function runAccept(io: DriverIo, statePath: string): Promise<void> {
   io.stdout("# open-split driver evidence");
   io.stdout("command: accept");
   const state = await loadState(statePath);
+  await dispatch(["login", "--as", "bob", "--provider", "google"], state, io);
+  const bob = state.session;
+  if (!bob) throw new DriverFailure(2, "accept 沒有登入 bob。");
   await dispatch(["login", "--as", "alice"], state, io);
   const groupsBefore = new Set(state.groups.map((group) => group.id));
   await dispatch(["create-group", "--name", "京都週末", "--currency", "JPY"], state, io);
@@ -92,10 +113,11 @@ async function runAccept(io: DriverIo, statePath: string): Promise<void> {
   if (!group) throw new DriverFailure(2, "accept 沒有建立群組。");
   const owner = group.members.find((member) => member.subject === state.session?.subject);
   if (!owner) throw new DriverFailure(2, "accept 沒有建立擁有者。");
-  const membersBefore = new Set(group.members.map((member) => member.id));
-  await dispatch(["add-member", "--group", group.id, "--name", "Bob", "--virtual"], state, io);
-  const bob = group.members.find((member) => !membersBefore.has(member.id));
-  if (!bob) throw new DriverFailure(2, "accept 沒有建立虛擬成員。");
+  const beforeBob = new Set(group.members.map((member) => member.id));
+  await dispatch(["add-member", "--group", group.id, "--name", "Bob", "--user", bob.userId], state, io);
+  const bobMember = group.members.find((member) => !beforeBob.has(member.id));
+  if (!bobMember) throw new DriverFailure(2, "accept 沒有加入 bob。");
+  const participants = `${owner.id},${bobMember.id}`;
   await dispatch(
     [
       "add-expense",
@@ -108,13 +130,68 @@ async function runAccept(io: DriverIo, statePath: string): Promise<void> {
       "--currency",
       "JPY",
       "--participants",
-      `${owner.id},${bob.id}`,
+      participants,
       "--split",
       "equal",
+      "--category",
+      "晚餐",
+      "--note",
+      "京都晚餐",
     ],
     state,
     io,
   );
+  const dinner = group.expenses.at(-1);
+  if (!dinner) throw new DriverFailure(2, "accept 沒有記到支出。");
+  await dispatch(
+    [
+      "update-expense",
+      "--group",
+      group.id,
+      "--expense",
+      dinner.id,
+      "--payer",
+      owner.id,
+      "--amount",
+      "3600",
+      "--currency",
+      "JPY",
+      "--participants",
+      participants,
+      "--split",
+      "equal",
+      "--category",
+      "晚餐",
+      "--note",
+      "京都晚餐，改過金額",
+    ],
+    state,
+    io,
+  );
+  await dispatch(
+    [
+      "add-expense",
+      "--group",
+      group.id,
+      "--payer",
+      bobMember.id,
+      "--amount",
+      "900",
+      "--currency",
+      "JPY",
+      "--participants",
+      participants,
+      "--split",
+      "equal",
+      "--category",
+      "交通",
+    ],
+    state,
+    io,
+  );
+  const taxi = group.expenses.at(-1);
+  if (!taxi || taxi.id === dinner.id) throw new DriverFailure(2, "accept 沒有記到要作廢的支出。");
+  await dispatch(["void-expense", "--group", group.id, "--expense", taxi.id], state, io);
   await dispatch(["show-balances", "--group", group.id], state, io);
   await dispatch(["settle", "--group", group.id], state, io);
   await dispatch(["share-link", "--group", group.id], state, io);
@@ -146,6 +223,10 @@ async function dispatch(
       return addMember(args, state, io);
     case "add-expense":
       return addExpense(args, state, io);
+    case "update-expense":
+      return updateExpense(args, state, io);
+    case "void-expense":
+      return voidExpense(args, state, io);
     case "show-balances":
       return showBalances(args, state, io);
     case "settle":
@@ -157,7 +238,7 @@ async function dispatch(
   }
 }
 
-function login(args: readonly string[], state: DriverState, io: DriverIo): void {
+async function login(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
   const nameFlag = takeOption(args, "as");
   const providerFlag = takeOption(nameFlag.rest, "provider");
   const environmentFlag = takeOption(providerFlag.rest, "environment");
@@ -169,72 +250,263 @@ function login(args: readonly string[], state: DriverState, io: DriverIo): void 
   }
   const environment = environmentFlag.value ?? process.env.OPEN_SPLIT_ENVIRONMENT ?? "development";
   assertDevAuthAllowed({ environment, authDevIdentities: true });
-  const identity = (provider === "line" ? createDevLineProvider() : createDevGoogleProvider()).signInAs(name);
+  (provider === "line" ? createDevLineProvider() : createDevGoogleProvider()).signInAs(name);
+  const session = parseResponse(
+    devSessionSchema,
+    await apiRequest(null, "/api/dev/session", { method: "POST", body: { name, provider } }),
+    "登入",
+  );
   state.session = {
     provider: provider as AuthProviderId,
     name,
-    subject: identity.subject,
-    displayName: identity.displayName,
+    subject: session.subject,
+    displayName: session.displayName,
+    userId: session.userId,
+    token: session.token,
   };
   io.stdout(`login.provider: ${state.session.provider}`);
   io.stdout(`login.name: ${state.session.name}`);
   io.stdout(`login.subject: ${state.session.subject}`);
   io.stdout(`login.display_name: ${state.session.displayName}`);
+  io.stdout(`login.user_id: ${state.session.userId}`);
   io.stdout(`login.environment: ${environment}`);
 }
 
-function whoami(state: DriverState, io: DriverIo): void {
+async function whoami(state: DriverState, io: DriverIo): Promise<void> {
   if (!state.session) {
     io.stdout("login.subject: (none)");
     return;
   }
-  io.stdout(`login.provider: ${state.session.provider}`);
+  const session = parseResponse(currentSessionSchema, await apiRequest(state.session.token, "/api/session"), "whoami");
+  io.stdout(`login.provider: ${session.provider}`);
   io.stdout(`login.name: ${state.session.name}`);
-  io.stdout(`login.subject: ${state.session.subject}`);
+  io.stdout(`login.subject: ${session.subject}`);
 }
 
-function createGroup(args: readonly string[], state: DriverState, io: DriverIo): void {
+async function createGroup(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
   const session = requireSession(state);
   const nameFlag = takeOption(args, "name");
   const currencyFlag = takeOption(nameFlag.rest, "currency");
   rejectUnknown(currencyFlag.rest);
   const name = requireOption(nameFlag.value, "name");
   const currency = currencyFlag.value ?? "TWD";
-  if (!/^[A-Z]{3}$/.test(currency)) throw new DriverFailure(1, "幣別必須是三個大寫字母。");
-  const groupId = newId("grp");
-  const memberId = newId("mem");
+  const created = parseResponse(
+    createGroupResultSchema,
+    await apiRequest(session.token, "/api/groups", {
+      method: "POST",
+      body: { name, defaultCurrency: currency },
+    }),
+    "建立群組",
+  );
+  const detail = parseResponse(groupDetailSchema, await apiRequest(session.token, `/api/groups/${created.id}`), "群組");
   state.groups.push({
-    id: groupId,
-    name,
-    currency,
+    id: created.id,
+    name: created.name,
+    currency: created.defaultCurrency,
     createdBySubject: session.subject,
-    members: [{ id: memberId, name: session.displayName, virtual: false, subject: session.subject }],
+    members: detail.members.map((member) => ({
+      id: member.id,
+      name: member.displayName,
+      virtual: member.virtual,
+      subject: member.userId === session.userId ? session.subject : null,
+    })),
     expenses: [],
     invites: [],
   });
-  io.stdout(`group_id: ${groupId}`);
-  io.stdout(`group_name: ${name}`);
-  io.stdout(`owner_member_id: ${memberId}`);
-  io.stdout(`currency: ${currency}`);
+  io.stdout(`group_id: ${created.id}`);
+  io.stdout(`group_name: ${created.name}`);
+  io.stdout(`owner_member_id: ${created.ownerMemberId}`);
+  io.stdout(`currency: ${created.defaultCurrency}`);
 }
 
-function addMember(args: readonly string[], state: DriverState, io: DriverIo): void {
-  requireSession(state);
+async function addMember(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const session = requireSession(state);
   const groupFlag = takeOption(args, "group");
   const nameFlag = takeOption(groupFlag.rest, "name");
   const virtualFlag = takeFlag(nameFlag.rest, "virtual");
-  rejectUnknown(virtualFlag.rest);
+  const userFlag = takeOption(virtualFlag.rest, "user");
+  rejectUnknown(userFlag.rest);
   const group = requireGroup(state, requireOption(groupFlag.value, "group"));
   const name = requireOption(nameFlag.value, "name");
-  const memberId = newId("mem");
-  group.members.push({ id: memberId, name, virtual: virtualFlag.present, subject: null });
-  io.stdout(`member_id: ${memberId}`);
-  io.stdout(`member_name: ${name}`);
-  io.stdout(`member_virtual: ${virtualFlag.present ? "true" : "false"}`);
+  if (virtualFlag.present && userFlag.value) throw new DriverFailure(1, "虛擬成員不能同時給 --user。");
+  if (!userFlag.value) {
+    throw new DriverFailure(1, "請用 --user 連結已登入的人。虛擬成員是切片 2。");
+  }
+  const member = parseResponse(
+    memberSchema,
+    await apiRequest(session.token, `/api/groups/${group.id}/members`, {
+      method: "POST",
+      body: {
+        displayName: name,
+        virtual: virtualFlag.present,
+        ...(userFlag.value ? { userId: userFlag.value } : {}),
+      },
+    }),
+    "成員",
+  );
+  let subject: string | null = null;
+  if (userFlag.value) {
+    const directory = parseResponse(devUserListSchema, await apiRequest(session.token, "/api/dev/users"), "使用者");
+    subject = directory.users.find((user) => user.userId === userFlag.value)?.subject ?? null;
+  }
+  group.members.push({ id: member.id, name: member.displayName, virtual: member.virtual, subject });
+  io.stdout(`member_id: ${member.id}`);
+  io.stdout(`member_name: ${member.displayName}`);
+  io.stdout(`member_virtual: ${member.virtual ? "true" : "false"}`);
 }
 
-function addExpense(args: readonly string[], state: DriverState, io: DriverIo): void {
-  requireSession(state);
+async function addExpense(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const session = requireSession(state);
+  const parsed = readExpenseFlags(args);
+  const group = requireGroup(state, parsed.groupId);
+  const result = parseResponse(
+    expenseResultSchema,
+    await apiRequest(session.token, `/api/groups/${group.id}/expenses`, { method: "POST", body: parsed.body }),
+    "支出",
+  );
+  group.expenses.push({
+    id: result.id,
+    payerId: parsed.body.payerId,
+    amount: parsed.body.amount,
+    currency: parsed.body.currency,
+    participantIds: parsed.body.participantIds,
+    split: parsed.body.split,
+    voided: false,
+  });
+  io.stdout(`expense_id: ${result.id}`);
+  io.stdout(`expense_amount_minor: ${parsed.body.amount}`);
+  io.stdout(`expense_currency: ${parsed.body.currency}`);
+  io.stdout(`expense_split: ${parsed.body.split.type}`);
+  printShares(result.shares, parsed.body.amount, io);
+  await printInvariants(session.token, group.id, io);
+}
+
+async function updateExpense(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const session = requireSession(state);
+  const expenseFlag = takeOption(args, "expense");
+  const parsed = readExpenseFlags(expenseFlag.rest);
+  const group = requireGroup(state, parsed.groupId);
+  const expenseId = requireOption(expenseFlag.value, "expense");
+  const result = parseResponse(
+    expenseResultSchema,
+    await apiRequest(session.token, `/api/groups/${group.id}/expenses/${expenseId}`, {
+      method: "PATCH",
+      body: parsed.body,
+    }),
+    "修改支出",
+  );
+  const next: ExpenseRecord = {
+    id: result.id,
+    payerId: parsed.body.payerId,
+    amount: parsed.body.amount,
+    currency: parsed.body.currency,
+    participantIds: parsed.body.participantIds,
+    split: parsed.body.split,
+    voided: false,
+  };
+  const index = group.expenses.findIndex((expense) => expense.id === expenseId);
+  if (index >= 0) group.expenses[index] = next;
+  io.stdout(`expense_updated: ${result.id}`);
+  io.stdout(`expense_amount_minor: ${parsed.body.amount}`);
+  io.stdout(`expense_currency: ${parsed.body.currency}`);
+  io.stdout(`expense_split: ${parsed.body.split.type}`);
+  printShares(result.shares, parsed.body.amount, io);
+  await printInvariants(session.token, group.id, io);
+}
+
+async function voidExpense(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const session = requireSession(state);
+  const groupFlag = takeOption(args, "group");
+  const expenseFlag = takeOption(groupFlag.rest, "expense");
+  rejectUnknown(expenseFlag.rest);
+  const group = requireGroup(state, requireOption(groupFlag.value, "group"));
+  const expenseId = requireOption(expenseFlag.value, "expense");
+  const result = parseResponse(
+    voidExpenseResultSchema,
+    await apiRequest(session.token, `/api/groups/${group.id}/expenses/${expenseId}/void`, { method: "POST" }),
+    "作廢",
+  );
+  if (result.id !== expenseId) throw new DriverFailure(2, "作廢結果的 id 與請求不一致。");
+  const existing = group.expenses.find((expense) => expense.id === expenseId);
+  if (existing) existing.voided = true;
+  io.stdout(`expense_voided: ${expenseId}`);
+  io.stdout("voided: true");
+  await printInvariants(session.token, group.id, io);
+}
+
+async function showBalances(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const session = requireSession(state);
+  const groupFlag = takeOption(args, "group");
+  rejectUnknown(groupFlag.rest);
+  const group = requireGroup(state, requireOption(groupFlag.value, "group"));
+  await printInvariants(session.token, group.id, io);
+}
+
+async function settle(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const session = requireSession(state);
+  const groupFlag = takeOption(args, "group");
+  rejectUnknown(groupFlag.rest);
+  const group = requireGroup(state, requireOption(groupFlag.value, "group"));
+  const balances = await printInvariants(session.token, group.id, io);
+  const nets = wireBalances(balances.balances);
+  const transfers = simplifyDebts(nets);
+  const bound = transferBound(nets.length);
+  io.stdout(`transfer.count: ${String(transfers.length)}`);
+  io.stdout(`transfer.bound: ${String(bound)}`);
+  io.stdout(`invariant.transfer_bound: ${transfers.length <= bound ? "pass" : "fail"}`);
+  if (transfers.length > bound) throw new DriverFailure(2, "轉帳數超過參與者 − 1。");
+  for (const transfer of transfers) {
+    io.stdout(`transfer: ${transfer.fromId} -> ${transfer.toId} ${formatMinor(transfer.amount)}`);
+  }
+  const cleared = settledToZero(applyTransfers(nets, transfers));
+  io.stdout(`invariant.settled_to_zero: ${cleared ? "pass" : "fail"}`);
+  if (!cleared) throw new DriverFailure(2, "結清方案沒有讓所有人歸零。");
+  io.stdout("note: 這只印出結清方案。把結清寫入帳本是切片 3。");
+}
+
+async function shareLink(args: readonly string[], state: DriverState, io: DriverIo): Promise<void> {
+  const session = requireSession(state);
+  const groupFlag = takeOption(args, "group");
+  rejectUnknown(groupFlag.rest);
+  const group = requireGroup(state, requireOption(groupFlag.value, "group"));
+  const invite = parseResponse(
+    inviteResultSchema,
+    await apiRequest(session.token, `/api/groups/${group.id}/invites`, { method: "POST" }),
+    "邀請",
+  );
+  group.invites.push({ id: newId("inv"), token: invite.token, path: invite.invitePath, createdBySubject: session.subject });
+  io.stdout(`invite_path: ${invite.invitePath}`);
+  io.stdout("share_surface: link");
+  io.stdout("note: LIFF shareTargetPicker 與 Flex Message 屬於後續切片。這條指令只建立邀請連結，不送進 LINE 聊天。");
+}
+
+async function printInvariants(token: string, groupId: string, io: DriverIo) {
+  const balances = parseResponse(
+    balancesResultSchema,
+    await apiRequest(token, `/api/groups/${groupId}/balances`),
+    "餘額",
+  );
+  io.stdout(`group_id: ${balances.groupId}`);
+  for (const row of balances.balances) io.stdout(`balance.${row.participantId}: ${row.net}`);
+  io.stdout(`balances_sum_minor: ${balances.sum}`);
+  io.stdout(`invariant.balances_sum_to_zero: ${balances.sum === "0" ? "pass" : "fail"}`);
+  if (balances.sum !== "0") throw new DriverFailure(2, "餘額總和不是 0。");
+  return balances;
+}
+
+function printShares(shares: readonly { participantId: string; amount: string }[], amount: string, io: DriverIo): void {
+  for (const share of shares) io.stdout(`share.${share.participantId}: ${share.amount}`);
+  const total = sumMinor(shares.map((share) => parseUnsignedMinor(share.amount)));
+  const same = toMinorUnits(total) === toMinorUnits(parseUnsignedMinor(amount));
+  io.stdout(`invariant.shares_sum_to_amount: ${same ? "pass" : "fail"}`);
+  if (!same) throw new DriverFailure(2, "份額合計不等於支出金額。");
+}
+
+function wireBalances(rows: readonly { participantId: string; net: string }[]): NetBalance[] {
+  return rows.map((row) => ({ participantId: row.participantId, net: parseSignedMinor(row.net) }));
+}
+
+function readExpenseFlags(args: readonly string[]) {
   const groupFlag = takeOption(args, "group");
   const payerFlag = takeOption(groupFlag.rest, "payer");
   const amountFlag = takeOption(payerFlag.rest, "amount");
@@ -244,133 +516,79 @@ function addExpense(args: readonly string[], state: DriverState, io: DriverIo): 
   const amountsFlag = takeOption(splitFlag.rest, "amounts");
   const pointsFlag = takeOption(amountsFlag.rest, "basis-points");
   const weightsFlag = takeOption(pointsFlag.rest, "weights");
-  rejectUnknown(weightsFlag.rest);
-
-  const group = requireGroup(state, requireOption(groupFlag.value, "group"));
-  const payerId = requireOption(payerFlag.value, "payer");
-  const amount = requireOption(amountFlag.value, "amount");
-  const currency = requireOption(currencyFlag.value, "currency");
+  const categoryFlag = takeOption(weightsFlag.rest, "category");
+  const noteFlag = takeOption(categoryFlag.rest, "note");
+  rejectUnknown(noteFlag.rest);
+  const groupId = requireOption(groupFlag.value, "group");
   const participantIds = requireOption(participantsFlag.value, "participants")
     .split(",")
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
-  const splitType = splitFlag.value ?? "equal";
-  if (currency !== group.currency) {
-    throw new DriverFailure(1, "多幣別換算屬於切片 4。driver 目前只接受與群組相同的幣別。");
-  }
-  for (const id of [payerId, ...participantIds]) {
-    if (!group.members.some((member) => member.id === id)) {
-      throw new DriverFailure(1, `${id} 不是這個群組的成員。`);
-    }
-  }
-  const split = buildSplit(splitType, participantIds, amountsFlag.value, pointsFlag.value, weightsFlag.value);
-  const parsed = expenseInputSchema.safeParse({
-    groupId: group.id,
-    payerId,
-    amount,
-    currency,
+  const split = buildSplit(splitFlag.value ?? "equal", participantIds, amountsFlag.value, pointsFlag.value, weightsFlag.value);
+  const body = {
+    groupId,
+    payerId: requireOption(payerFlag.value, "payer"),
+    amount: requireOption(amountFlag.value, "amount"),
+    currency: requireOption(currencyFlag.value, "currency"),
     participantIds,
     split,
-  });
+    ...(categoryFlag.value ? { category: categoryFlag.value } : {}),
+    ...(noteFlag.value ? { note: noteFlag.value } : {}),
+  };
+  const parsed = expenseInputSchema.safeParse(body);
   if (!parsed.success) {
     throw new DriverFailure(1, `支出不符合契約：${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
   }
-  const expenseId = newId("exp");
-  group.expenses.push({
-    id: expenseId,
-    payerId: parsed.data.payerId,
-    amount: parsed.data.amount,
-    currency: parsed.data.currency,
-    participantIds: parsed.data.participantIds,
-    split: parsed.data.split,
-  });
-  io.stdout(`expense_id: ${expenseId}`);
-  io.stdout(`expense_amount_minor: ${parsed.data.amount}`);
-  io.stdout(`expense_currency: ${parsed.data.currency}`);
-  io.stdout(`expense_split: ${parsed.data.split.type}`);
-  printInvariants(group, io);
+  return { groupId, body: parsed.data };
 }
 
-function showBalances(args: readonly string[], state: DriverState, io: DriverIo): void {
-  const groupFlag = takeOption(args, "group");
-  rejectUnknown(groupFlag.rest);
-  const group = requireGroup(state, requireOption(groupFlag.value, "group"));
-  printInvariants(group, io);
-}
-
-function settle(args: readonly string[], state: DriverState, io: DriverIo): void {
-  const groupFlag = takeOption(args, "group");
-  rejectUnknown(groupFlag.rest);
-  const group = requireGroup(state, requireOption(groupFlag.value, "group"));
-  const balances = projectBalances(group);
+function printDemo(io: DriverIo): void {
+  const eaters = ["a2", "a3", "a4", "a5", "me"];
+  const balances = computeBalances([
+    { payerId: "me", amount: minor(3000n), participantIds: eaters, split: { type: "equal" } },
+  ]);
   const transfers = simplifyDebts(balances);
-  const bound = transferBound(balances.length);
+  io.stdout("# 範例：10 人的群組裡只有 5 人吃飯，我付了 3000 JPY，平均分");
+  io.stdout("command: demo");
+  io.stdout("member_count: 10");
+  io.stdout("ate: 5");
+  io.stdout("amount_minor: 3000");
+  io.stdout("currency: JPY");
+  for (const row of balances) io.stdout(`balance.${row.participantId}: ${formatMinor(row.net)}`);
+  const total = toMinorUnits(balancesSum(balances));
+  io.stdout(`invariant.balances_sum_to_zero: ${total === 0n ? "pass" : "fail"}`);
   io.stdout(`transfer.count: ${String(transfers.length)}`);
-  io.stdout(`transfer.bound: ${String(bound)}`);
-  io.stdout(`invariant.transfer_bound: ${transfers.length <= bound ? "pass" : "fail"}`);
-  if (transfers.length > bound) throw new DriverFailure(2, "轉帳數超過參與者 − 1。");
-  for (const transfer of transfers) {
-    io.stdout(`transfer: ${transfer.fromId} -> ${transfer.toId} ${formatMinor(transfer.amount)}`);
+  io.stdout(`transfer.bound: ${String(transferBound(balances.length))}`);
+  io.stdout(`invariant.settled_to_zero: ${settledToZero(applyTransfers(balances, transfers)) ? "pass" : "fail"}`);
+  io.stdout("note: 沒出現在餘額向量裡的成員視為 0。driver demo 不寫入 D1，也不代表切片 1 已完成。");
+  if (total !== 0n) throw new DriverFailure(2, "demo 的餘額總和不是 0。");
+}
+
+function requireSession(state: DriverState): Session {
+  if (!state.session?.token) throw new DriverFailure(1, "還沒登入。請先 login --as alice。");
+  return state.session;
+}
+
+function requireGroup(state: DriverState, groupId: string): GroupRecord {
+  const group = state.groups.find((item) => item.id === groupId);
+  if (!group) throw new DriverFailure(1, `找不到群組 ${groupId}。`);
+  return group;
+}
+
+function parseResponse<T>(
+  schema: {
+    safeParse: (
+      value: unknown,
+    ) => { success: true; data: T } | { success: false; error: { issues: readonly { message: string }[] } };
+  },
+  value: unknown,
+  label: string,
+): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new DriverFailure(2, `${label} 不符合契約：${parsed.error.issues.map((issue) => issue.message).join("; ")}`);
   }
-  const cleared = settledToZero(applyTransfers(balances, transfers));
-  io.stdout(`invariant.settled_to_zero: ${cleared ? "pass" : "fail"}`);
-  if (!cleared) throw new DriverFailure(2, "結清方案沒有讓所有人歸零。");
-  io.stdout("note: 這只印出結清方案。把結清寫入帳本是切片 3。");
-}
-
-function shareLink(args: readonly string[], state: DriverState, io: DriverIo): void {
-  const session = requireSession(state);
-  const groupFlag = takeOption(args, "group");
-  rejectUnknown(groupFlag.rest);
-  const group = requireGroup(state, requireOption(groupFlag.value, "group"));
-  const token = randomUUID();
-  const path = `/invite/${token}`;
-  group.invites.push({ id: newId("inv"), token, path, createdBySubject: session.subject });
-  io.stdout(`invite_path: ${path}`);
-  io.stdout("share_surface: link");
-  io.stdout("note: LIFF shareTargetPicker 與 Flex Message 屬於後續切片。這條指令只建立邀請連結，不送進 LINE 聊天。");
-}
-
-function printInvariants(group: GroupRecord, io: DriverIo): void {
-  const balances = projectBalances(group);
-  io.stdout(`group_id: ${group.id}`);
-  for (const row of balances) {
-    io.stdout(`balance.${row.participantId}: ${formatMinor(row.net)}`);
-  }
-  const sum = toMinorUnits(balancesSum(balances));
-  io.stdout(`balances_sum_minor: ${sum.toString(10)}`);
-  io.stdout(`invariant.balances_sum_to_zero: ${sum === 0n ? "pass" : "fail"}`);
-  if (sum !== 0n) throw new DriverFailure(2, "餘額總和不是 0。");
-}
-
-function projectBalances(group: GroupRecord) {
-  const expenses: Expense[] = group.expenses.map((expense) => ({
-    payerId: expense.payerId,
-    amount: parseUnsignedMinor(expense.amount),
-    participantIds: expense.participantIds,
-    split: toCoreSplit(expense.split),
-  }));
-  return computeBalances(expenses);
-}
-
-function toCoreSplit(split: SplitWire): SplitSpec {
-  switch (split.type) {
-    case "equal":
-      return { type: "equal" };
-    case "exact": {
-      const amounts: Record<string, Minor> = {};
-      for (const [id, value] of Object.entries(split.amounts)) amounts[id] = parseUnsignedMinor(value);
-      return { type: "exact", amounts };
-    }
-    case "percentage":
-      return { type: "percentage", basisPoints: split.basisPoints };
-    case "shares":
-      return { type: "shares", weights: split.weights };
-    default: {
-      const unexpected: never = split;
-      throw new DriverFailure(1, `不認識的分帳 ${String(unexpected)}。`);
-    }
-  }
+  return parsed.data;
 }
 
 function buildSplit(
@@ -415,39 +633,6 @@ function parseIntPairs(raw: string, participantIds: readonly string[]): Record<s
     record[id] = Number(value);
   }
   return record;
-}
-
-function printDemo(io: DriverIo): void {
-  const eaters = ["a2", "a3", "a4", "a5", "me"];
-  const balances = computeBalances([
-    { payerId: "me", amount: minor(3000n), participantIds: eaters, split: { type: "equal" } },
-  ]);
-  const transfers = simplifyDebts(balances);
-  io.stdout("# 範例：10 人的群組裡只有 5 人吃飯，我付了 3000 JPY，平均分");
-  io.stdout("command: demo");
-  io.stdout("member_count: 10");
-  io.stdout("ate: 5");
-  io.stdout("amount_minor: 3000");
-  io.stdout("currency: JPY");
-  for (const row of balances) io.stdout(`balance.${row.participantId}: ${formatMinor(row.net)}`);
-  const sum = toMinorUnits(balancesSum(balances));
-  io.stdout(`invariant.balances_sum_to_zero: ${sum === 0n ? "pass" : "fail"}`);
-  io.stdout(`transfer.count: ${String(transfers.length)}`);
-  io.stdout(`transfer.bound: ${String(transferBound(balances.length))}`);
-  io.stdout(`invariant.settled_to_zero: ${settledToZero(applyTransfers(balances, transfers)) ? "pass" : "fail"}`);
-  io.stdout("note: 沒出現在餘額向量裡的成員視為 0。driver demo 不寫入 D1，也不代表切片 1 已完成。");
-  if (sum !== 0n) throw new DriverFailure(2, "demo 的餘額總和不是 0。");
-}
-
-function requireSession(state: DriverState): Session {
-  if (!state.session) throw new DriverFailure(1, "還沒登入。請先 login --as alice。");
-  return state.session;
-}
-
-function requireGroup(state: DriverState, groupId: string): GroupRecord {
-  const group = state.groups.find((item) => item.id === groupId);
-  if (!group) throw new DriverFailure(1, `找不到群組 ${groupId}。`);
-  return group;
 }
 
 function newId(prefix: string): string {
