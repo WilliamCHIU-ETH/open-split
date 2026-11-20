@@ -9,8 +9,12 @@ import type {
   DevUser,
   Group,
   GroupDetail,
+  GroupSummary,
   InvitePreview,
   JoinResult,
+  PaymentProfileWrite,
+  SettlementPreview,
+  SettlementWrite,
   SplitWire,
 } from "@open-split/contracts";
 
@@ -101,6 +105,16 @@ export const api = {
   voidExpense: (groupId: string, expenseId: string) =>
     request<{ id: string; voided: true }>(`/api/groups/${groupId}/expenses/${expenseId}/void`, { method: "POST" }),
   balances: (groupId: string) => request<BalancesResult>(`/api/groups/${groupId}/balances`),
+  settlementPlan: (groupId: string) => request<SettlementPreview>(`/api/groups/${groupId}/settlement-plan`),
+  recordSettlement: (groupId: string, body: SettlementWrite) =>
+    request<{ id: string }>(`/api/groups/${groupId}/settlements`, { method: "POST", body }),
+  voidSettlement: (groupId: string, settlementId: string) =>
+    request<{ id: string; voided: true }>(`/api/groups/${groupId}/settlements/${settlementId}/void`, { method: "POST" }),
+  savePaymentProfile: (groupId: string, memberId: string, body: PaymentProfileWrite) =>
+    request<{ id: string }>(`/api/groups/${groupId}/members/${memberId}/payment-profile`, { method: "PUT", body }),
+  clearPaymentProfile: (groupId: string, memberId: string) =>
+    request<{ ok: true }>(`/api/groups/${groupId}/members/${memberId}/payment-profile`, { method: "DELETE" }),
+  summary: (groupId: string) => request<GroupSummary>(`/api/groups/${groupId}/summary`),
   activity: (groupId: string) => request<ActivityResult>(`/api/groups/${groupId}/activity`),
 };
 

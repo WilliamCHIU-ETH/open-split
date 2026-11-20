@@ -30,13 +30,23 @@ function report(button: HTMLButtonElement, ok: boolean): void {
 }
 
 async function writeClipboard(button: HTMLButtonElement, target: HTMLElement): Promise<void> {
-  const text = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target.value : target.innerText.trim();
+  const text = target instanceof HTMLInputElement ? target.value : target.textContent;
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
     report(button, true);
   } catch {
-    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) target.select();
+    if (target instanceof HTMLInputElement) {
+      target.select();
+    } else {
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
     report(button, false);
   }
 }
@@ -67,17 +77,22 @@ export function useCopyCommands(): void {
   }, []);
 }
 
-export function CopyLink({ value, label }: { value: string; label: string }) {
+export function CopyLink({ value, label, plainText = false }: { value: string; label: string; plainText?: boolean }) {
   const reactId = useId().replaceAll(":", "");
   const inputId = `copy-${reactId}`;
   const inputRef = useRef<HTMLInputElement>(null);
+  const textRef = useRef<HTMLParagraphElement>(null);
 
   return (
-    <div className="copy-row">
-      <label className="visually-hidden" htmlFor={inputId}>
-        {label}
-      </label>
-      <input id={inputId} ref={inputRef} readOnly value={value} spellCheck={false} autoComplete="off" />
+    <div className={plainText ? "copy-row copy-row-text" : "copy-row"}>
+      {plainText ? (
+        <p id={inputId} ref={textRef} className="payment-details">{value}</p>
+      ) : (
+        <>
+          <label className="visually-hidden" htmlFor={inputId}>{label}</label>
+          <input id={inputId} ref={inputRef} readOnly value={value} spellCheck={false} autoComplete="off" />
+        </>
+      )}
       <span className="copy">
         <button
           type="button"
@@ -85,11 +100,12 @@ export function CopyLink({ value, label }: { value: string; label: string }) {
           {...{ command: "--copy", commandfor: inputId }}
           onClick={(event) => {
             if ("CommandEvent" in window) return;
-            const target = inputRef.current;
+            const target = textRef.current ?? inputRef.current;
             if (target) void writeClipboard(event.currentTarget, target);
           }}
         >
           複製
+          <span className="visually-hidden"> {label}</span>
         </button>
         <span className="tip" role="status" />
       </span>

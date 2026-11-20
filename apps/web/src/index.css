@@ -547,3 +547,100 @@ body:has(dialog[open]) .action-bar {
     min-block-size: 3rem;
   }
 }
+
+.settle-card,
+.payment-details {
+  overflow-wrap: anywhere;
+}
+
+.payment-details {
+  white-space: pre-wrap;
+}
+
+.copy-row-text {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  margin-block: 0.25rem 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.75rem;
+  background: var(--color-paper);
+}
+
+.copy-row-text .copy {
+  flex: none;
+}
+
+.copy-row-text .copy-button {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.875rem;
+}
+
+.copy-row-text .tip {
+  inset-inline: auto 0;
+  white-space: nowrap;
+}
+
+.settle-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.settle-line > .money {
+  flex: 0 0 auto;
+  max-inline-size: 60%;
+  text-align: end;
+}
+
+.settle-record {
+  inline-size: 100%;
+}
+
+@container ledger (min-width: 28rem) {
+  .settle-record {
+    inline-size: auto;
+  }
+}
+
+.ledger-totals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem 0.75rem;
+}
+
+.ledger-net {
+  grid-column: 1 / -1;
+  margin-block-start: 0.25rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 0.5rem;
+}
+
+.category-meter {
+  display: block;
+  inline-size: 100%;
+  block-size: 0.625rem;
+  margin-block-start: 0.25rem;
+  -webkit-appearance: none;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-line);
+}
+
+.category-meter::-webkit-meter-bar {
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-line);
+}
+
+.category-meter::-webkit-meter-optimum-value {
+  border-radius: 999px;
+  background: var(--color-focus);
+}
+
+.category-meter::-moz-meter-bar {
+  border-radius: 999px;
+  background: var(--color-focus);
+}
