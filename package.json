@@ -1,0 +1,33 @@
+{
+  "name": "open-split",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "workerd"]
+  },
+  "scripts": {
+    "check": "pnpm typecheck && pnpm lint && pnpm arch && pnpm legacy-scan && pnpm budget && pnpm test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "eslint .",
+    "arch": "depcruise --output-type err-long --config .dependency-cruiser.cjs packages/core/src packages/auth/src packages/contracts/src apps/worker/src apps/web/src tools/driver/src",
+    "legacy-scan": "node tools/web-quality/legacy-scan.mjs",
+    "budget": "pnpm --filter @open-split/web build && node tools/web-quality/budget.mjs",
+    "test": "pnpm -r --if-present test",
+    "driver": "pnpm --filter @open-split/driver start --",
+    "types": "pnpm --filter @open-split/worker types"
+  },
+  "devDependencies": {
+    "@open-split/eslint-plugin": "workspace:*",
+    "dependency-cruiser": "18.8.0",
+    "eslint": "9.39.5",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "modern-web-guidance": "1.0.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.73.0"
+  }
+}

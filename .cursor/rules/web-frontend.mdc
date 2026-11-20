@@ -1,0 +1,18 @@
+---
+description: 改 apps/web 之前先查 Modern Web Guidance，並遵守前端品質文件。
+globs: apps/web/**/*
+alwaysApply: false
+---
+
+改 `apps/web` 的版面、對話框、popover、表單、轉場、無障礙或效能之前：
+
+1. 讀 `docs/frontend-quality.md`。那份文件是這個產品的門檻（含 LINE 內建瀏覽器），不是另一套平台教學。
+2. 用專案鎖定的 CLI 查指引，不要用 `@latest`：
+
+```sh
+DISABLE_TELEMETRY=1 pnpm exec modern-web-guidance search "<2 到 5 個英文單字>"
+DISABLE_TELEMETRY=1 pnpm exec modern-web-guidance retrieve "<id>"
+```
+
+3. 平台怎麼寫，以查到的指引為準。不要在規則裡重寫 dialog、表單或轉場的做法。
+4. 改完要過 `pnpm check`。

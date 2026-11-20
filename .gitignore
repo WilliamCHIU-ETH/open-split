@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.wrangler/
+apps/worker/worker-configuration.d.ts
+.dev.vars
+*.log
+*.tsbuildinfo
+.vite/
+.open-split-driver/
+.DS_Store
+__violation_probe__.ts

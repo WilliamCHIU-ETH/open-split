@@ -1,0 +1,19 @@
+# Copy to .dev.vars. Wrangler loads .dev.vars for `wrangler dev` only and does not upload it.
+# Never commit .dev.vars. Never set AUTH_DEV_IDENTITIES=true in wrangler.jsonc.
+
+ENVIRONMENT=development
+AUTH_DEV_IDENTITIES=true
+
+# Test LINE Login channel from the LINE Developers console.
+# The channel id and LIFF id identify the test channel. The channel secret is a secret:
+# leave it empty in this example and put the real test secret only in .dev.vars.
+LINE_LOGIN_CHANNEL_ID=
+LINE_LOGIN_CHANNEL_SECRET=
+LINE_LIFF_ID=
+
+# Secondary login. Not used by the dev identity provider.
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+
+# Optional Official Account silent push. Not a chat bot. Later slice.
+# LINE_MESSAGING_CHANNEL_ACCESS_TOKEN=
