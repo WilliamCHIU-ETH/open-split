@@ -1,11 +1,16 @@
 import { useEffect, useId, useState } from "react";
-import type { ActivityResult, BalancesResult, CurrentSession, DevUser, ExpenseView, GroupDetail } from "@open-split/contracts";
+import type {
+  ActivityResult, BalancesResult, CurrentSession, DevUser, ExpenseView, GroupDetail, GroupSummary, SettlementPreview,
+} from "@open-split/contracts";
 import { ApiError, api, type ExpenseDraft } from "./api.ts";
 import { CopyLink } from "./copy-link.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { ExpenseForm, type ExpenseFormState } from "./ExpenseForm.tsx";
 import { formatMoney, formatWhen, memberStatus, netLabel, netTone, splitLabel } from "./format.ts";
+import { LedgerSummary } from "./LedgerSummary.tsx";
 import { MemberDialog } from "./MemberDialog.tsx";
+import { SettlementSection, activitySummary } from "./SettlementSection.tsx";
+import { SettleUpDialog, type SettleUpAction } from "./SettleUpDialog.tsx";
 
 export function Ledger({
   groupId,
@@ -20,9 +25,13 @@ export function Ledger({
   const [detail, setDetail] = useState<GroupDetail | null>(null);
   const [balances, setBalances] = useState<BalancesResult | null>(null);
   const [activity, setActivity] = useState<ActivityResult | null>(null);
+  const [plan, setPlan] = useState<SettlementPreview | null>(null);
+  const [summary, setSummary] = useState<GroupSummary | null>(null);
+  const [settleUpAction, setSettleUpAction] = useState<SettleUpAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
+  const [loadedRevision, setLoadedRevision] = useState(-1);
   const [expenseForm, setExpenseForm] = useState<ExpenseFormState | null>(null);
   const [memberOpen, setMemberOpen] = useState(false);
   const [voidTarget, setVoidTarget] = useState<ExpenseView | null>(null);
@@ -32,12 +41,21 @@ export function Ledger({
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    void Promise.all([api.group(groupId), api.balances(groupId), api.activity(groupId)])
-      .then(([nextDetail, nextBalances, nextActivity]) => {
+    void Promise.all([
+      api.group(groupId),
+      api.balances(groupId),
+      api.activity(groupId),
+      api.settlementPlan(groupId),
+      api.summary(groupId),
+    ])
+      .then(([nextDetail, nextBalances, nextActivity, nextPlan, nextSummary]) => {
         if (cancelled) return;
         setDetail(nextDetail);
         setBalances(nextBalances);
         setActivity(nextActivity);
+        setPlan(nextPlan);
+        setSummary(nextSummary);
+        setLoadedRevision(revision);
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
@@ -65,7 +83,14 @@ export function Ledger({
   }, [revision]);
 
   const names = new Map(detail?.members.map((member) => [member.id, member.displayName]) ?? []);
+  const settlements = new Map(detail?.settlements.map((settlement) => [settlement.id, settlement]) ?? []);
   const currency = detail?.group.defaultCurrency ?? balances?.currency ?? "";
+  const refreshing = loadedRevision !== revision;
+
+  function openSettleUp(action: SettleUpAction) {
+    setStatus(null);
+    setSettleUpAction(action);
+  }
 
   function refresh(message: string) {
     setStatus(message);
@@ -138,14 +163,17 @@ export function Ledger({
       </h1>
       <p className="text-muted">{currency ? `幣別 ${currency}。金額是最小貨幣單位。` : "正在讀取帳本。"}</p>
       {error ? (
-        <p role="alert" tabIndex={-1}>
-          {error}
-        </p>
+        <>
+          <p role="alert" tabIndex={-1}>{error}</p>
+          <button type="button" className="secondary mt-2" onClick={() => setRevision((value) => value + 1)}>
+            重新讀取帳本
+          </button>
+        </>
       ) : null}
-      {status ? <p role="status">{status}</p> : null}
+      <p role="status">{status}</p>
       {!detail && !error ? <progress aria-label="正在讀取帳本" /> : null}
 
-      {detail && balances && activity ? (
+      {detail && balances && activity && plan && summary ? (
         <>
           <section aria-labelledby="balances-title" className="mt-6">
             <h2 id="balances-title">餘額</h2>
@@ -173,6 +201,15 @@ export function Ledger({
               {balances.sum === "0" ? "，帳是平的。" : "，帳不平。"}
             </p>
           </section>
+
+          <SettlementSection
+            detail={detail}
+            plan={plan}
+            userId={session.userId}
+            names={names}
+            refreshing={refreshing}
+            onAction={openSettleUp}
+          />
 
           <section aria-labelledby="expenses-title" className="mt-8">
             <h2 id="expenses-title">支出</h2>
@@ -234,6 +271,23 @@ export function Ledger({
                     <span className="font-semibold">{member.displayName}</span>
                     <span className="badge">{memberStatus(member)}</span>
                   </p>
+                  {member.paymentProfile ? (
+                    <div className="mt-2 payment-details">
+                      <p>收款方式：{member.paymentProfile.label}</p>
+                      <p>{member.paymentProfile.details}</p>
+                    </div>
+                  ) : null}
+                  {member.userId === session.userId || member.virtual ? (
+                    <button
+                      type="button"
+                      className="secondary mt-3"
+                      disabled={refreshing}
+                      onClick={() => openSettleUp({ kind: "profile", member })}
+                    >
+                      {member.paymentProfile ? "編輯收款方式" : "設定收款方式"}
+                      <span className="visually-hidden">，{member.displayName}</span>
+                    </button>
+                  ) : null}
                   {member.virtual ? (
                     <button
                       type="button"
@@ -252,12 +306,14 @@ export function Ledger({
             </button>
           </section>
 
+          <LedgerSummary summary={summary} names={names} />
+
           <section aria-labelledby="activity-title" className="mt-8">
             <h2 id="activity-title">活動紀錄</h2>
             <ol className="stack mt-3">
               {activity.entries.map((entry) => (
                 <li key={entry.id} className="card">
-                  <p>{entry.summary}</p>
+                  <p>{activitySummary(entry, names, settlements)}</p>
                   <p className="text-sm text-muted">
                     <time dateTime={entry.createdAt}>{formatWhen(entry.createdAt)}</time>
                   </p>
@@ -275,6 +331,17 @@ export function Ledger({
       </div>
 
       <ExpenseForm form={expenseForm} detail={detail} onClose={() => setExpenseForm(null)} onSave={saveExpense} />
+      {detail ? (
+        <SettleUpDialog
+          action={settleUpAction}
+          detail={detail}
+          onClose={() => setSettleUpAction(null)}
+          onChanged={(message) => {
+            setSettleUpAction(null);
+            refresh(message);
+          }}
+        />
+      ) : null}
       <MemberDialog
         open={memberOpen}
         groupId={groupId}
