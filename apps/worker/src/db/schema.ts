@@ -70,7 +70,12 @@ export const groupMembers = sqliteTable(
     claimedAt: integer("claimed_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   },
-  (table) => [uniqueIndex("group_members_claim_token_hash").on(table.claimTokenHash)],
+  (table) => [
+    uniqueIndex("group_members_claim_token_hash").on(table.claimTokenHash),
+    // SQLite treats NULL as distinct, so several virtual members can share an empty user_id.
+    // A real user can hold only one seat in a group, including across a join/claim race.
+    uniqueIndex("group_members_group_user").on(table.groupId, table.userId),
+  ],
 );
 
 export const inviteLinks = sqliteTable(

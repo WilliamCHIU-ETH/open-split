@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import type { GroupDetail, SplitWire } from "@open-split/contracts";
 import type { ExpenseDraft } from "./api.ts";
 import { Dialog } from "./Dialog.tsx";
@@ -65,6 +65,7 @@ function ExpenseFields({
   onSave: (draft: ExpenseDraft, expenseId: string | null) => Promise<void>;
 }) {
   const prefix = useId().replaceAll(":", "");
+  const formRef = useRef<HTMLFormElement>(null);
   const editing = form.expenseId !== null;
   const [amount, setAmount] = useState(form.amount);
   const [payerId, setPayerId] = useState(form.payerId);
@@ -82,7 +83,12 @@ function ExpenseFields({
   const currency = detail.group.defaultCurrency;
   const firstSelected = detail.members.find((member) => selected.includes(member.id));
 
+  useEffect(() => {
+    clearCrossFieldValidity(formRef.current);
+  }, [amount, mode, selected, exact, percent, weights]);
+
   function chooseMode(next: SplitMode) {
+    clearCrossFieldValidity(formRef.current);
     setMode(next);
     if (next === "shares") {
       setWeights((current) => fillOnes(selected, current));
@@ -99,6 +105,7 @@ function ExpenseFields({
 
   function fillPercents() {
     if (selected.length === 0) return;
+    clearCrossFieldValidity(formRef.current);
     setPercent((current) => ({ ...current, ...equalPercents(selected) }));
   }
 
@@ -106,6 +113,7 @@ function ExpenseFields({
     if (!firstSelected) return;
     const value = exactShareFor(amount, selected, exact, firstSelected.id);
     if (value === null) return;
+    clearCrossFieldValidity(formRef.current);
     setExact((current) => ({ ...current, [firstSelected.id]: value }));
   }
 
@@ -150,7 +158,7 @@ function ExpenseFields({
   }
 
   return (
-    <form aria-labelledby={headingId} onSubmit={(event) => void onSubmit(event)}>
+    <form ref={formRef} aria-labelledby={headingId} onSubmit={(event) => void onSubmit(event)}>
       <div className="dialog-scroll">
       <h2 id={headingId}>{editing ? "修改支出" : "記一筆"}</h2>
       <p id={`${prefix}-hint`} className="text-sm text-muted">
@@ -172,6 +180,7 @@ function ExpenseFields({
           enterKeyHint="next"
           onChange={(event) => {
             event.currentTarget.setCustomValidity("");
+            clearCrossFieldValidity(event.currentTarget.form);
             setAmount(event.currentTarget.value);
           }}
           onInvalid={(event) => {
@@ -225,7 +234,7 @@ function ExpenseFields({
               value={member.id}
               checked={selected.includes(member.id)}
               onChange={(event) => {
-                event.currentTarget.setCustomValidity("");
+                clearCrossFieldValidity(event.currentTarget.form);
                 toggle(member.id, event.currentTarget.checked);
               }}
             />
@@ -255,8 +264,9 @@ function ExpenseFields({
                     value={exact[member.id] ?? ""}
                     enterKeyHint="next"
                     onChange={(event) => {
-                      event.currentTarget.setCustomValidity("");
-                      setExact((current) => ({ ...current, [member.id]: event.currentTarget.value }));
+                      const value = event.currentTarget.value;
+                      clearCrossFieldValidity(event.currentTarget.form);
+                      setExact((current) => ({ ...current, [member.id]: value }));
                     }}
                   />
                 ) : null}
@@ -271,8 +281,9 @@ function ExpenseFields({
                     aria-describedby={`${prefix}-percent-help`}
                     enterKeyHint="next"
                     onChange={(event) => {
-                      event.currentTarget.setCustomValidity("");
-                      setPercent((current) => ({ ...current, [member.id]: event.currentTarget.value }));
+                      const value = event.currentTarget.value;
+                      clearCrossFieldValidity(event.currentTarget.form);
+                      setPercent((current) => ({ ...current, [member.id]: value }));
                     }}
                     onBlur={(event) => {
                       const points = parsePercent(event.currentTarget.value);
@@ -293,8 +304,9 @@ function ExpenseFields({
                     value={weights[member.id] ?? ""}
                     enterKeyHint="next"
                     onChange={(event) => {
-                      event.currentTarget.setCustomValidity("");
-                      setWeights((current) => ({ ...current, [member.id]: event.currentTarget.value }));
+                      const value = event.currentTarget.value;
+                      clearCrossFieldValidity(event.currentTarget.form);
+                      setWeights((current) => ({ ...current, [member.id]: value }));
                     }}
                     onInvalid={(event) => event.currentTarget.setCustomValidity("份數要是正整數。")}
                   />
@@ -317,7 +329,14 @@ function ExpenseFields({
             </button>
           ) : null}
           {mode === "shares" ? (
-            <button type="button" className="secondary" onClick={() => setWeights(fillOnes(selected, {}))}>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                clearCrossFieldValidity(formRef.current);
+                setWeights(fillOnes(selected, {}));
+              }}
+            >
               每人 1 份
             </button>
           ) : null}
@@ -373,6 +392,14 @@ function ExpenseFields({
       </div>
     </form>
   );
+}
+
+function clearCrossFieldValidity(formElement: HTMLFormElement | null) {
+  formElement
+    ?.querySelectorAll<HTMLInputElement>('input[name="participant"], input[name="exact"], input[name="percentage"], input[name="shares"]')
+    .forEach((field) => {
+      if (field.validity.customError) field.setCustomValidity("");
+    });
 }
 
 function wireSplit(

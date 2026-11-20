@@ -4,3 +4,6 @@
 ALTER TABLE expenses ADD COLUMN split_json TEXT;
 
 CREATE UNIQUE INDEX group_members_claim_token_hash ON group_members (claim_token_hash);
+
+-- One logged-in user, one seat. NULL user_id stays repeatable, so virtual members are unaffected.
+CREATE UNIQUE INDEX group_members_group_user ON group_members (group_id, user_id);

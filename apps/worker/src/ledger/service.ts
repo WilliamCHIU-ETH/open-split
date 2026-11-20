@@ -280,27 +280,32 @@ export async function addMember(
   const now = new Date();
   const memberId = newId("mem");
   const userId = input.userId;
-  await db.batch([
-    db.insert(groupMembers).values({
-      id: memberId,
-      groupId: input.groupId,
-      displayName: input.displayName,
-      userId,
-      role: "member",
-      claimTokenHash: null,
-      claimedAt: null,
-      createdAt: now,
-    }),
-    activityInsert(db, {
-      groupId: input.groupId,
-      actorUserId: actor.userId,
-      action: "member.added",
-      entityType: "member",
-      entityId: memberId,
-      summary: `加入成員「${input.displayName}」`,
-      createdAt: now,
-    }),
-  ]);
+  try {
+    await db.batch([
+      db.insert(groupMembers).values({
+        id: memberId,
+        groupId: input.groupId,
+        displayName: input.displayName,
+        userId,
+        role: "member",
+        claimTokenHash: null,
+        claimedAt: null,
+        createdAt: now,
+      }),
+      activityInsert(db, {
+        groupId: input.groupId,
+        actorUserId: actor.userId,
+        action: "member.added",
+        entityType: "member",
+        entityId: memberId,
+        summary: `加入成員「${input.displayName}」`,
+        createdAt: now,
+      }),
+    ]);
+  } catch (error) {
+    if (isDuplicateMembership(error)) throw new ServiceError(409, "already_member", "這個人已經在群組裡。");
+    throw error;
+  }
   return {
     ...toMember({
       id: memberId,
@@ -488,27 +493,34 @@ export async function acceptInvite(db: LedgerDb, actor: SessionUser, token: stri
   if (existing) return { groupId: invite.groupId, member: toMember(existing), alreadyMember: true };
   const now = new Date();
   const memberId = newId("mem");
-  await db.batch([
-    db.insert(groupMembers).values({
-      id: memberId,
-      groupId: invite.groupId,
-      displayName: actor.displayName,
-      userId: actor.userId,
-      role: "member",
-      claimTokenHash: null,
-      claimedAt: null,
-      createdAt: now,
-    }),
-    activityInsert(db, {
-      groupId: invite.groupId,
-      actorUserId: actor.userId,
-      action: "member.joined",
-      entityType: "member",
-      entityId: memberId,
-      summary: `用邀請連結加入，成為「${actor.displayName}」`,
-      createdAt: now,
-    }),
-  ]);
+  try {
+    await db.batch([
+      db.insert(groupMembers).values({
+        id: memberId,
+        groupId: invite.groupId,
+        displayName: actor.displayName,
+        userId: actor.userId,
+        role: "member",
+        claimTokenHash: null,
+        claimedAt: null,
+        createdAt: now,
+      }),
+      activityInsert(db, {
+        groupId: invite.groupId,
+        actorUserId: actor.userId,
+        action: "member.joined",
+        entityType: "member",
+        entityId: memberId,
+        summary: `用邀請連結加入，成為「${actor.displayName}」`,
+        createdAt: now,
+      }),
+    ]);
+  } catch (error) {
+    if (!isDuplicateMembership(error)) throw error;
+    const winner = (await listMembers(db, invite.groupId)).find((member) => member.userId === actor.userId);
+    if (!winner) throw new ServiceError(409, "already_member", "你已經是這個群組的成員。");
+    return { groupId: invite.groupId, member: toMember(winner), alreadyMember: true };
+  }
   return {
     groupId: invite.groupId,
     member: toMember({
@@ -553,10 +565,17 @@ export async function claimMember(db: LedgerDb, actor: SessionUser, token: strin
     throw new ServiceError(409, "already_member", "你已經是這個群組的成員，不能再認領另一個位置。");
   }
   const now = new Date();
-  await db
-    .update(groupMembers)
-    .set({ userId: actor.userId, claimedAt: now, claimTokenHash: null })
-    .where(and(eq(groupMembers.id, member.id), isNull(groupMembers.userId)));
+  try {
+    await db
+      .update(groupMembers)
+      .set({ userId: actor.userId, claimedAt: now, claimTokenHash: null })
+      .where(and(eq(groupMembers.id, member.id), isNull(groupMembers.userId)));
+  } catch (error) {
+    if (isDuplicateMembership(error)) {
+      throw new ServiceError(409, "already_member", "你已經是這個群組的成員，不能再認領另一個位置。");
+    }
+    throw error;
+  }
   const saved = await db.select().from(groupMembers).where(eq(groupMembers.id, member.id)).limit(1);
   const row = saved[0];
   if (!row || row.userId !== actor.userId) {
@@ -854,6 +873,11 @@ function readSummary(payloadJson: string, action: string): string {
     return action;
   }
   return action;
+}
+
+function isDuplicateMembership(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("UNIQUE constraint failed") && message.includes("group_members.user_id");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
