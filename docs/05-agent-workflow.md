@@ -48,11 +48,12 @@ open-split 由 Agent 寫、Agent 審、Agent 合併。擁有者只管意圖、�
 
 `merge-gate` 遇到下面的檔案會擋下，直到 PR 有 `owner-approved` 標籤：
 
-- `docs/00-intent.md`、`docs/01-product-review.md`、`docs/05-agent-workflow.md`、`AGENTS.md`
+- 意圖與規則：`docs/00-intent.md`、`docs/01-product-review.md`、`docs/05-agent-workflow.md`、任何層級的 `AGENTS.md`、`CLAUDE.md`、`.cursor/rules/`
 - 修改或刪除既有的 ADR 與遷移（新增檔案不用）
-- 閘門本身：`.github/workflows/`、`tools/repo-guard/`
+- 閘門與工程護欄：`.github/workflows/`、`tools/repo-guard/`、`tools/constraint-check/`、`tools/eslint-plugin-open-split/`、`tools/web-quality/`、`.dependency-cruiser.cjs`、`eslint.config.js`、根目錄 `package.json`
+- 正式環境設定：`apps/worker/wrangler.jsonc`
 
-`owner-approved` 只能由擁有者加。Agent 用的是擁有者的 GitHub 帳號，機器分辨不出是誰加的，所以這條靠 Agent 遵守：**Agent 不可以自己加 `owner-approved`，也不可以拿掉 `hold`。** 要同意時，在對話裡請擁有者加。
+`owner-approved` 只能由擁有者加。Agent 用的是擁有者的 GitHub 帳號，機器分辨不出是誰加的，所以這條靠 Agent 遵守：**Agent 不可以自己加 `owner-approved`，也不可以拿掉 `hold`。** 要同意時，在對話裡請擁有者加。如果留言標成 resolved 後狀態沒自動更新，可在 GitHub Actions 手動觸發 `merge-gate`（`workflow_dispatch`）重算。
 
 想先停住某份 PR，加上 `hold` 標籤即可。
 
