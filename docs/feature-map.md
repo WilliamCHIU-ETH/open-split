@@ -24,13 +24,16 @@
 | 看每個分類花了多少 | 3 | done |
 | 用另一種貨幣記，並自訂匯率 | 4 | done |
 | 用自己的代理人記帳 | 5 | done |
-| 允許某個人的代理人連到帳本 | 5 | done |
+| 允許某個人的代理人連到帳本 | 5 | done（Google 白名單；切片 6 改用 LINE） |
+| 用我的 LINE 帳號授權我的代理人 | 6 | planned |
+| 看得出哪一筆是代理人記的 | 5 | done |
 | 讓代理人附上收據或檔案，帳本只保存、不辨識 | 5 | done |
 | 用 LINE 登入 | 6 | planned |
-| 用 Google 登入 | 6 | planned |
+| 用 Google 登入 | — | deferred（不在上線範圍，見 ADR-0009） |
 | 在 LINE 裡打開帳本並記帳 | 6 | planned |
 | 把帳單卡片分享到 LINE 聊天 | 6 | planned |
 | 讓官方帳號安靜地推一則提醒 | 7 | planned |
+| 代理人記了一筆，群組裡的人也會知道 | 7 | planned |
 | 自己決定要不要收到推播 | 7 | planned |
 | 幫支出記上實際發生的日期 | 8 | planned |
 | 搜尋或篩選支出 | 8 | planned |

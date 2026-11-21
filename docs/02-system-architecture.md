@@ -42,7 +42,7 @@ flowchart LR
 
 LINE Login 是主要登入，開放給所有人。Google 是次要登入。兩者只建立 `users` 與 `auth_identities`，**不**打開 MCP。
 
-MCP 走獨立的 OAuth 2.1（PKCE S256 + RFC 7591 動態註冊 + RFC 9728 / 8414 metadata），使用 `@cloudflare/workers-oauth-provider` 管理權杖與 KV 狀態；正式環境向上游驗證 Google OIDC ID token（`jose` RS256 JWKS），並核對環境變數 `MCP_ALLOWED_EMAILS` Gmail 白名單與 `users.mcp_allowed`，才核發 `mcp:read` / `mcp:write` 權杖；本機測試可透過 dev 同意頁完成相同授權與白名單檢查，服務層另行確認群組成員資格。見 [ADR-0003](adr/0003-auth-separation.md) 與 [ADR-0007](adr/0007-mcp-oauth-google-whitelist.md)。
+MCP 走獨立的 OAuth 2.1（PKCE S256 + RFC 7591 動態註冊 + RFC 9728 / 8414 metadata），使用 `@cloudflare/workers-oauth-provider` 管理權杖與 KV 狀態；正式環境向上游驗證 Google OIDC ID token（`jose` RS256 JWKS），並核對環境變數 `MCP_ALLOWED_EMAILS` Gmail 白名單與 `users.mcp_allowed`，才核發 `mcp:read` / `mcp:write` 權杖；本機測試可透過 dev 同意頁完成相同授權與白名單檢查，服務層另行確認群組成員資格。見 [ADR-0003](adr/0003-auth-separation.md) 與 [ADR-0007](adr/0007-mcp-oauth-google-whitelist.md)。切片 6 會把上游從 Google 換成網頁同一個 LINE Login，改由 `users.mcp_allowed` 與 `OWNER_LINE_USER_IDS` 決定，見 [ADR-0009](adr/0009-mcp-identity-via-line.md)。
 
 LIFF 使用打開它的那個人的 LINE 身份。在 LIFF 裡記帳就是在用帳本網頁。見 [ADR-0005](adr/0005-line-liff.md)。
 

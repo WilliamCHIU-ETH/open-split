@@ -1,6 +1,6 @@
 # ADR-0007：MCP OAuth 2.1 採用 Cloudflare OAuth Provider 與 Google 白名單
 
-- 狀態：已接受
+- 狀態：部分被取代。第 2 點「上游身份驗證與白名單」由 [ADR-0009](0009-mcp-identity-via-line.md) 取代，其餘仍有效。
 - 日期：2026-11-20
 
 ## 背景

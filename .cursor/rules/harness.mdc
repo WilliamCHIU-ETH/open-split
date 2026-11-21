@@ -1,14 +1,8 @@
 ---
-description: open-split 的工程約束。實作前讀文件，以檢查結果為準。
+description: open-split 的工程約束。規則只寫在 AGENTS.md。
 alwaysApply: true
 ---
 
-實作前先讀 `docs/04-vertical-slices.md` 裡對應的切片，以及 `docs/feature-map.md`。
+開始任何工作前讀 repo 根目錄的 `AGENTS.md`，並照它列的文件讀下去。規則只維護在 `AGENTS.md`，不要在這份檔案另寫。
 
-帳本數學只放在 `packages/core`。金額是整數最小貨幣單位。Web API 與 MCP 共用 `packages/contracts` 的 Zod schema。
-
-假的 LINE／Google 身份只給本機 driver 與 `wrangler dev`。理由與拒絕條件在 `@open-split/auth` 的錯誤訊息，以及 `docs/adr/0003-auth-separation.md`。
-
-做完跑 `pnpm check`，再用 `pnpm driver` 跑過該切片，把輸出貼進 PR。不要合併。
-
-前端工作另看 `.cursor/rules/web-frontend.mdc` 與 `docs/frontend-quality.md`。不要在這份規則裡重寫分帳或介面慣例。
+前端工作另看 `.cursor/rules/web-frontend.mdc` 與 `docs/frontend-quality.md`。

@@ -1,6 +1,6 @@
 # open-split
 
-擁有者自己掌控的分帳服務。帳本網頁是主產品，外部代理人經 OAuth 2.1 的 MCP 寫入同一本帳，LINE 用來登入、在 LIFF 裡打開同一套網頁，以及分享或安靜推播。不做聊天機器人，不經手付款。
+擁有者和朋友自己用的分帳服務（homelab，不是公開服務）。LINE 上的體驗對標 Lightsplit，而且 Agent 是一等公民：外部代理人經 OAuth 2.1 的 MCP 寫入同一本帳。帳本網頁是主產品，LINE 用來登入、在 LIFF 裡打開同一套網頁，以及分享或安靜推播。不做聊天機器人，不經手付款。為什麼要做與上線的定義見 [docs/00-intent.md](docs/00-intent.md)；Agent 從 [AGENTS.md](AGENTS.md) 開始讀。
 
 目前已完成 **切片 1 至 5**：平均／指定金額／百分比／份數分帳、虛擬成員認領與邀請連結、簡化結清與收款方式／群組摘要、多幣別（ISO 4217 小數與整數比值匯率換算）、MCP OAuth 2.1（`@cloudflare/workers-oauth-provider` + Google OIDC + Gmail 白名單），以及 Cloudflare R2 收據附檔上傳下載（僅保存，不做 OCR）。本機與測試環境可用假身份或本機 OAuth 同意頁驗收，帳在 D1、OAuth 狀態在 KV、收據在 R2。
 
@@ -14,7 +14,7 @@
 | `apps/worker` | Hono + Drizzle (D1) + R2 收據 + MCP OAuth 2.1 Gateway (KV) |
 | `apps/web` | 手機優先的帳本網頁 |
 | `tools/driver` | 驗收用 CLI（含切片 1–5 完整 `accept`） |
-| `docs/` | 產品、架構、契約、切片、ADR `0001`–`0008` |
+| `docs/` | 意圖、產品、架構、契約、切片、Agent 工作流程、ADR `0001`–`0009` |
 
 ## 常用指令
 
@@ -46,4 +46,4 @@ pnpm --filter @open-split/web dev
 
 ## 還沒做的東西
 
-切片 6 至 8：正式 LINE Login OAuth 授權碼交換、LIFF SDK 與 `liff.shareTargetPicker()` Flex 卡片分享、可選的 LINE 官方帳號安靜推播，以及日期、搜尋／篩選、CSV 匯出、逐項拆帳、多人先付與封存／離開群組。
+切片 6 至 8：正式 LINE Login OAuth 授權碼交換、MCP 改用 LINE 授權（ADR-0009）、LIFF SDK 與 `liff.shareTargetPicker()` Flex 卡片分享、可選的 LINE 官方帳號安靜推播，以及日期、搜尋／篩選、CSV 匯出、逐項拆帳、多人先付與封存／離開群組。

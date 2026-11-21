@@ -38,11 +38,21 @@ Driver：`settle --record` 把方案逐筆寫入，再向伺服器讀餘額確�
 
 本機驗收繼續用假身份與 dev OAuth 同意頁，不把假身份開到部署設定。
 
-## 6. LINE Login、LIFF、分享卡片
+## 6. LINE Login、LIFF、分享卡片、MCP 改用 LINE 授權
 
-LINE Login 成為主要登入。Google 維持次要。LIFF 打開的是同一套帳本，在裡面記帳必須可用。`liff.shareTargetPicker()` 能把 Flex 卡片分享到聊天。
+LINE Login 成為主要登入。LIFF 打開的是同一套帳本，在裡面記帳必須可用。`liff.shareTargetPicker()` 能把 Flex 卡片分享到聊天。
+
+MCP 的上游登入改成同一個 LINE Login，`OWNER_LINE_USER_IDS` 與 `users.mcp_allowed` 決定誰的 Agent 能連；移除 Google 上游與 `MCP_ALLOWED_EMAILS`；正式環境停用 `add_member(virtual: false, userId)`。見 [ADR-0009](adr/0009-mcp-identity-via-line.md)。
+
+這一片會比較大，依 [05 Agent 工作流程](05-agent-workflow.md) 拆成幾份 PR：LINE Login 與 session、LIFF、分享卡片、MCP 上游切換。
 
 不做聊天機器人。見 [ADR-0005](adr/0005-line-liff.md)。
+
+## 上線
+
+不是新功能，是第一次真的給朋友用。定義在 [00 意圖](00-intent.md#上線的定義)：正式網域部署、真實 LINE 群組用 LIFF 記帳與分享、Agent 經 MCP 記一筆、結清歸零、備份與退回演練過。部署正式環境要先問擁有者。
+
+切片 7 與 8 排在上線之後。
 
 ## 7. 可選的官方帳號推播
 
@@ -61,4 +71,4 @@ LINE Login 成為主要登入。Google 維持次要。LIFF 打開的是同一套
 - 對應 `docs/feature-map.md` 的項目。
 - `pnpm check` 通過。
 - PR 裡貼上 driver 證據。
-- 不自動合併。
+- 照 [05 Agent 工作流程](05-agent-workflow.md) 的合併條件，由實作者以外的 Agent 合併。
