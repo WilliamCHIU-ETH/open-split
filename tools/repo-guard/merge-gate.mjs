@@ -92,7 +92,8 @@ export function evaluate({ pr, files, comments }) {
   const parsedState = latest ? parseCodexState(latest.body) : null;
   const review = parsedState?.code_review ?? null;
   const securityReview = parsedState?.security_review ?? null;
-  if (!review || review.commit_sha !== pr.headSha || review.status !== "completed") {
+  const needsCodexReview = !review || review.commit_sha !== pr.headSha || review.status !== "completed";
+  if (needsCodexReview) {
     waits.push(`等 Codex 審查 ${pr.headSha.slice(0, 7)}（可用 --request-review 請它審）`);
   } else if (
     review.has_unresolved_findings ||
@@ -103,7 +104,7 @@ export function evaluate({ pr, files, comments }) {
 
   const state = blockers.length > 0 ? "failure" : waits.length > 0 ? "pending" : "success";
   const reasons = [...blockers, ...waits];
-  return { state, reasons, changedLines: changed };
+  return { state, reasons, changedLines: changed, needsCodexReview };
 }
 
 function token() {
@@ -177,7 +178,7 @@ async function main() {
       body: JSON.stringify({ state: result.state, context: "merge-gate", description }),
     });
   }
-  if (args.includes("--request-review") && result.state === "pending") {
+  if (args.includes("--request-review") && result.needsCodexReview) {
     await api(`/repos/${r}/issues/${number}/comments`, {
       method: "POST",
       body: JSON.stringify({ body: "@codex review" }),

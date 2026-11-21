@@ -17,7 +17,12 @@ describe("merge-gate", () => {
 
   it("waits when Codex reviewed an older commit", () => {
     const old = codex({ commit_sha: "b".repeat(40), status: "completed", has_unresolved_findings: false });
-    expect(evaluate({ ...base, comments: [old] }).state).toBe("pending");
+    const res = evaluate({ ...base, comments: [old] });
+    expect(res.state).toBe("pending");
+    expect(res.needsCodexReview).toBe(true);
+    const blocked = evaluate({ ...base, files: [file("AGENTS.md")], comments: [old] });
+    expect(blocked.state).toBe("failure");
+    expect(blocked.needsCodexReview).toBe(true);
   });
 
   it("ignores review-state comments from other accounts", () => {
