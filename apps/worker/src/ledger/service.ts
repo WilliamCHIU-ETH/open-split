@@ -1,10 +1,5 @@
 import { and, asc, desc, eq, exists, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
-  createDevGoogleProvider,
-  createDevLineProvider,
-  type AuthProviderId,
-} from "@open-split/auth";
-import {
   splitSchema,
   type ExpenseInput,
   type GroupDetail,
@@ -39,14 +34,12 @@ import type { LedgerDb } from "../db/client.ts";
 import {
   activityLog,
   attachments,
-  authIdentities,
   expenseShares,
   expenses,
   groupMembers,
   groups,
   inviteLinks,
   paymentProfiles,
-  sessions,
   settlements,
   users,
 } from "../db/schema.ts";
@@ -55,213 +48,36 @@ import {
   toAttachmentSummary,
   validateAttachmentsForExpense,
 } from "./attachments.ts";
-import { errorHasText, ServiceError } from "./errors.ts";
+import {
+  activityInsert,
+  blankToNull,
+  DEFAULT_AUDIT,
+  isDuplicateMembership,
+  listMembers,
+  readActivityMeta,
+  requireGroup,
+  requireMembership,
+  toMember,
+  type AttachmentRow,
+  type AuditContext,
+  type ExpenseRow,
+  type MemberRow,
+  type SessionUser,
+  type ShareRow,
+} from "./context.ts";
+import { ServiceError } from "./errors.ts";
 import { newId, newSecret, sha256Hex } from "./ids.ts";
 
-const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
-
-export interface SessionUser {
-  readonly userId: string;
-  readonly displayName: string;
-  readonly provider: AuthProviderId;
-  readonly subject: string;
-  readonly primaryEmail?: string | null;
-}
-
-export interface AuditContext {
-  readonly via: "web" | "mcp";
-  readonly clientId?: string;
-}
-
-const DEFAULT_AUDIT: AuditContext = { via: "web" };
-
-type MemberRow = typeof groupMembers.$inferSelect;
-type ExpenseRow = typeof expenses.$inferSelect;
-type ShareRow = typeof expenseShares.$inferSelect;
-type AttachmentRow = typeof attachments.$inferSelect;
-
-export function parseAllowedEmails(raw: string | undefined): string[] {
-  return (raw ?? "")
-    .split(",")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-export async function devSignIn(
-  db: LedgerDb,
-  input: { readonly name: string; readonly provider: AuthProviderId },
-): Promise<SessionUser & { readonly token: string }> {
-  const provider = input.provider === "line" ? createDevLineProvider() : createDevGoogleProvider();
-  let identity: ReturnType<typeof provider.signInAs>;
-  try {
-    identity = provider.signInAs(input.name);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "無法建立假身份。";
-    throw new ServiceError(400, "invalid_identity", message);
-  }
-
-  const existing = await db
-    .select()
-    .from(authIdentities)
-    .where(and(eq(authIdentities.provider, identity.provider), eq(authIdentities.subject, identity.subject)))
-    .limit(1);
-  const found = existing[0];
-  const now = new Date();
-  let userId: string;
-  let displayName: string;
-  if (found) {
-    userId = found.userId;
-    const userRows = await db.select().from(users).where(eq(users.id, userId)).limit(1);
-    const user = userRows[0];
-    if (!user) throw new ServiceError(500, "missing_user", "身份沒有對應的使用者。");
-    displayName = user.displayName;
-  } else {
-    userId = newId("usr");
-    displayName = identity.displayName;
-    await db.batch([
-      db.insert(users).values({
-        id: userId,
-        displayName,
-        primaryEmail: null,
-        mcpAllowed: false,
-        createdAt: now,
-        updatedAt: now,
-      }),
-      db.insert(authIdentities).values({
-        id: newId("idn"),
-        userId,
-        provider: identity.provider,
-        subject: identity.subject,
-        createdAt: now,
-      }),
-    ]);
-  }
-
-  const token = newSecret();
-  await db.insert(sessions).values({
-    id: newId("ses"),
-    userId,
-    tokenHash: await sha256Hex(token),
-    expiresAt: new Date(now.getTime() + SESSION_MS),
-    createdAt: now,
-  });
-
-  return { token, userId, displayName, provider: identity.provider, subject: identity.subject };
-}
-
-export async function resolveGoogleUser(
-  db: LedgerDb,
-  claims: { readonly sub: string; readonly email: string; readonly name?: string },
-): Promise<SessionUser> {
-  const normalizedEmail = claims.email.trim().toLowerCase();
-  const [identity] = await db
-    .select()
-    .from(authIdentities)
-    .where(and(eq(authIdentities.provider, "google"), eq(authIdentities.subject, claims.sub)))
-    .limit(1);
-  const now = new Date();
-  if (identity) {
-    const [user] = await db.select().from(users).where(eq(users.id, identity.userId)).limit(1);
-    if (!user) throw new ServiceError(500, "missing_user", "身份沒有對應的使用者。");
-    if (user.primaryEmail !== normalizedEmail) {
-      await db.update(users).set({ primaryEmail: normalizedEmail, updatedAt: now }).where(eq(users.id, user.id));
-    }
-    return {
-      userId: user.id,
-      displayName: user.displayName,
-      provider: "google",
-      subject: identity.subject,
-      primaryEmail: normalizedEmail,
-    };
-  }
-
-  const userId = newId("usr");
-  const displayName = claims.name?.trim() || normalizedEmail.split("@")[0] || "Google 使用者";
-  await db.batch([
-    db.insert(users).values({
-      id: userId,
-      displayName,
-      primaryEmail: normalizedEmail,
-      mcpAllowed: false,
-      createdAt: now,
-      updatedAt: now,
-    }),
-    db.insert(authIdentities).values({
-      id: newId("idn"),
-      userId,
-      provider: "google",
-      subject: claims.sub,
-      createdAt: now,
-    }),
-  ]);
-  return {
-    userId,
-    displayName,
-    provider: "google",
-    subject: claims.sub,
-    primaryEmail: normalizedEmail,
-  };
-}
-
-export async function isUserMcpAuthorized(
-  db: LedgerDb,
-  allowedEmailsRaw: string | undefined,
-  userId: string,
-  emailHint?: string,
-): Promise<boolean> {
-  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
-  if (!user) return false;
-  if (user.mcpAllowed) return true;
-  const email = (user.primaryEmail ?? emailHint)?.trim().toLowerCase();
-  if (!email) return false;
-  return parseAllowedEmails(allowedEmailsRaw).includes(email);
-}
-
-export async function listDevUsers(db: LedgerDb): Promise<SessionUser[]> {
-  const rows = await db
-    .select({
-      userId: users.id,
-      displayName: users.displayName,
-      provider: authIdentities.provider,
-      subject: authIdentities.subject,
-    })
-    .from(authIdentities)
-    .innerJoin(users, eq(users.id, authIdentities.userId))
-    .orderBy(asc(users.displayName), asc(authIdentities.subject));
-  return rows;
-}
-
-export async function readSession(db: LedgerDb, token: string): Promise<SessionUser | null> {
-  const rows = await db
-    .select()
-    .from(sessions)
-    .where(eq(sessions.tokenHash, await sha256Hex(token)))
-    .limit(1);
-  const session = rows[0];
-  if (!session) return null;
-  if (session.expiresAt.getTime() <= Date.now()) return null;
-  const userRows = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
-  const user = userRows[0];
-  if (!user) return null;
-  const identityRows = await db
-    .select()
-    .from(authIdentities)
-    .where(eq(authIdentities.userId, user.id))
-    .limit(1);
-  const identity = identityRows[0];
-  if (!identity) return null;
-  return {
-    userId: user.id,
-    displayName: user.displayName,
-    provider: identity.provider,
-    subject: identity.subject,
-    primaryEmail: user.primaryEmail,
-  };
-}
-
-export async function deleteSession(db: LedgerDb, token: string): Promise<void> {
-  await db.delete(sessions).where(eq(sessions.tokenHash, await sha256Hex(token)));
-}
+export type { AuditContext, SessionUser } from "./context.ts";
+export {
+  deleteSession,
+  devSignIn,
+  isUserMcpAuthorized,
+  listDevUsers,
+  parseAllowedEmails,
+  readSession,
+  resolveGoogleUser,
+} from "./sessions.ts";
 
 export async function createGroup(
   db: LedgerDb,
@@ -1143,29 +959,6 @@ export async function rotateClaimLink(db: LedgerDb, actor: SessionUser, groupId:
   return { claimPath: `/claim/${token}`, token };
 }
 
-async function requireGroup(db: LedgerDb, groupId: string) {
-  const groupRows = await db.select().from(groups).where(eq(groups.id, groupId)).limit(1);
-  const group = groupRows[0];
-  if (!group) throw new ServiceError(404, "not_found", "找不到這個群組。");
-  return group;
-}
-
-async function listMembers(db: LedgerDb, groupId: string): Promise<MemberRow[]> {
-  return db
-    .select()
-    .from(groupMembers)
-    .where(eq(groupMembers.groupId, groupId))
-    .orderBy(asc(groupMembers.createdAt), asc(groupMembers.id));
-}
-
-async function requireMembership(db: LedgerDb, groupId: string, userId: string) {
-  const group = await requireGroup(db, groupId);
-  const members = await listMembers(db, groupId);
-  const actor = members.find((member) => member.userId === userId);
-  if (!actor) throw new ServiceError(403, "not_a_member", "你不是這個群組的成員。");
-  return { group, members, actor };
-}
-
 async function requireInvite(db: LedgerDb, token: string) {
   const rows = await db
     .select()
@@ -1357,25 +1150,6 @@ function wireShares(shares: readonly Share[]) {
   }));
 }
 
-function toMember(row: {
-  readonly id: string;
-  readonly groupId: string;
-  readonly displayName: string;
-  readonly userId: string | null;
-  readonly role: "owner" | "member";
-  readonly claimedAt: Date | null;
-}) {
-  return {
-    id: row.id,
-    groupId: row.groupId,
-    displayName: row.displayName,
-    userId: row.userId,
-    role: row.role,
-    virtual: row.userId === null,
-    claimedAt: row.claimedAt ? row.claimedAt.toISOString() : null,
-  };
-}
-
 function toExpenseView(
   row: ExpenseRow,
   defaultCurrency: string,
@@ -1448,74 +1222,4 @@ function readSplit(raw: string | null): SplitWire {
   const result = splitSchema.safeParse(parsed);
   if (!result.success) throw new ServiceError(500, "bad_split", "這筆支出的分法讀不出來。");
   return result.data;
-}
-
-function blankToNull(value: string | undefined): string | null {
-  if (value === undefined || value.length === 0) return null;
-  return value;
-}
-
-function activityInsert(
-  db: LedgerDb,
-  input: {
-    readonly groupId: string;
-    readonly actorUserId: string;
-    readonly action: string;
-    readonly entityType: string;
-    readonly entityId: string;
-    readonly summary: string;
-    readonly audit: AuditContext;
-    readonly createdAt: Date;
-    readonly shares?: readonly { readonly participantId: string; readonly amount: string }[];
-    readonly payload?: Record<string, unknown>;
-  },
-  condition?: SQL,
-  payloadJson: string | SQL = JSON.stringify({
-    summary: input.summary,
-    shares: input.shares ?? null,
-    via: input.audit.via,
-    ...(input.audit.clientId ? { clientId: input.audit.clientId } : {}),
-    ...input.payload,
-  }),
-) {
-  const values = {
-    id: newId("act"),
-    groupId: input.groupId,
-    actorUserId: input.actorUserId,
-    action: input.action,
-    entityType: input.entityType,
-    entityId: input.entityId,
-    payloadJson,
-    createdAt: input.createdAt,
-  };
-  const insert = db.insert(activityLog);
-  if (!condition) return insert.values(values);
-  return insert.select(sql`select ${values.id}, ${values.groupId}, ${values.actorUserId}, ${values.action},
-    ${values.entityType}, ${values.entityId}, ${payloadJson}, ${values.createdAt.getTime()} where ${condition}`);
-}
-
-function readActivityMeta(
-  payloadJson: string,
-  action: string,
-): { readonly summary: string; readonly via: "web" | "mcp"; readonly clientId: string | null } {
-  try {
-    const parsed = JSON.parse(payloadJson) as unknown;
-    if (isRecord(parsed)) {
-      const summary = typeof parsed.summary === "string" && parsed.summary.length > 0 ? parsed.summary : action;
-      const via = parsed.via === "mcp" ? "mcp" : "web";
-      const clientId = typeof parsed.clientId === "string" && parsed.clientId.length > 0 ? parsed.clientId : null;
-      return { summary, via, clientId };
-    }
-  } catch {
-    return { summary: action, via: "web", clientId: null };
-  }
-  return { summary: action, via: "web", clientId: null };
-}
-
-function isDuplicateMembership(error: unknown): boolean {
-  return errorHasText(error, "UNIQUE constraint failed") && errorHasText(error, "group_members.user_id");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
