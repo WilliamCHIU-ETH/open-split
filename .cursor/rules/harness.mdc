@@ -5,4 +5,4 @@ alwaysApply: true
 
 開始任何工作前讀 repo 根目錄的 `AGENTS.md`，並照它列的文件讀下去。規則只維護在 `AGENTS.md`，不要在這份檔案另寫。
 
-前端工作另看 `.cursor/rules/web-frontend.mdc` 與 `docs/frontend-quality.md`。
+子目錄專屬規則分別維護在 `apps/web/AGENTS.md`、`apps/worker/AGENTS.md` 與 `docs/frontend-quality.md`。

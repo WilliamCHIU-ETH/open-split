@@ -3,6 +3,22 @@
   "name": "open-split",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-20",
+  // Single-origin deployment (ADR-0010): serve apps/web/dist via Workers Static Assets
+  // while keeping API, auth/OAuth, MCP, and health routes Worker-first.
+  "assets": {
+    "directory": "../web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*",
+      "/auth/*",
+      "/mcp",
+      "/authorize",
+      "/callback",
+      "/oauth/*",
+      "/.well-known/*",
+      "/health"
+    ]
+  },
   // Node.js compatibility is already on for this date. Do not set nodejs_compat;
   // workerd rejects that flag once the compatibility date enables it.
   // database_id, kv id, and bucket_name below are placeholders until Slice 6+ prod setup.
