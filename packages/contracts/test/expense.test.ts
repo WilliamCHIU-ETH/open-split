@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   addMemberInputSchema,
+  apiPaths,
   attachmentUploadIntentInputSchema,
   expenseInputSchema,
+  groupDetailSchema,
+  groupSummarySchema,
   mcpToolContracts,
   plannedHttpRoutes,
 } from "../src/index.ts";
@@ -138,5 +141,19 @@ describe("mcpToolContracts", () => {
         expect(jsonSchema.required ?? [], `${tool.name} must require groupId`).toContain("groupId");
       }
     }
+  });
+
+  it("shares exact output schemas between HTTP and MCP (no stub drift)", () => {
+    const byName = new Map(mcpToolContracts.map((tool) => [tool.name, tool]));
+    expect(byName.get("get_group")?.output).toBe(groupDetailSchema);
+    expect(byName.get("get_summary")?.output).toBe(groupSummarySchema);
+  });
+});
+
+describe("apiPaths", () => {
+  it("encodes path parameters cleanly", () => {
+    expect(apiPaths.group("grp_1")).toBe("/api/groups/grp_1");
+    expect(apiPaths.invite("tok/a")).toBe("/api/invites/tok%2Fa");
+    expect(apiPaths.groupExpense("grp_1", "exp_2")).toBe("/api/groups/grp_1/expenses/exp_2");
   });
 });

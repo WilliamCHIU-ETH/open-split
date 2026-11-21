@@ -37,11 +37,12 @@ export {
   shareWireSchema,
   splitSchema,
   type ExpenseInput,
+  type ExpenseResult,
   type FxRateWire,
   type SplitWire,
 } from "./expense.ts";
 
-export { plannedHttpRoutes, type PlannedHttpRoute } from "./routes.ts";
+export { apiPaths, plannedHttpRoutes, type PlannedHttpRoute } from "./routes.ts";
 
 export {
   activityResultSchema,
@@ -90,15 +91,19 @@ export {
   type ClaimGrant,
   type ClaimPreview,
   type ClaimResult,
+  type CreateGroupResult,
   type CurrentSession,
   type DevSignIn,
   type DevUser,
   type ExpenseView,
   type GroupDetail,
+  type GroupList,
   type GroupSummary,
   type InvitePreview,
+  type InviteResult,
   type JoinResult,
 } from "./http.ts";
+export type { VoidExpenseResult } from "./ledger.ts";
 
 export {
   paymentProfileClearResultSchema,

@@ -11,13 +11,13 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { and, eq } from "drizzle-orm";
 import { createDb } from "../db/client.ts";
 import { authIdentities, users } from "../db/schema.ts";
-import { createApp } from "../http/app.ts";
 import {
   isUserMcpAuthorized,
   parseAllowedEmails,
   resolveGoogleUser,
 } from "../ledger/service.ts";
-import { handleMcpRequest, readBoundedBytes, type McpTokenProps } from "./server.ts";
+import { readBoundedBytes } from "../shared/bytes.ts";
+import { handleMcpRequest, type McpTokenProps } from "./server.ts";
 
 export interface OAuthGatewayOptions {
   /** Only tests inject mock Google OIDC endpoints. */
@@ -30,7 +30,7 @@ export interface OAuthGatewayOptions {
   readonly allowLoopbackOrigin?: boolean;
 }
 
-type OAuthWorkerEnv = Env & {
+export type OAuthWorkerEnv = Env & {
   OAUTH_PROVIDER?: OAuthHelpers;
 };
 
@@ -63,8 +63,11 @@ const OAUTH_EXACT_PATHS = new Set([
 
 const DEV_FALLBACK_COOKIE_KEY = "open-split-dev-only-cookie-key-32ch";
 
-export function createWorkerHandler(options: OAuthGatewayOptions = {}) {
-  const webApp = createApp();
+export function isOAuthPath(pathname: string): boolean {
+  return OAUTH_EXACT_PATHS.has(pathname);
+}
+
+export function createOAuthGateway(options: OAuthGatewayOptions = {}) {
   const google = options.google ?? GOOGLE_ENDPOINTS;
   const jwks = createRemoteJWKSet(new URL(google.jwks), { timeoutDuration: 5000, cooldownDuration: 30000 });
 
@@ -84,8 +87,8 @@ export function createWorkerHandler(options: OAuthGatewayOptions = {}) {
       }
 
       const url = new URL(request.url);
-      if (!OAUTH_EXACT_PATHS.has(url.pathname)) {
-        return webApp.fetch(request, env, ctx);
+      if (!isOAuthPath(url.pathname)) {
+        return safeJson(404, "not_found");
       }
 
       if (url.pathname === "/mcp" && url.search) {

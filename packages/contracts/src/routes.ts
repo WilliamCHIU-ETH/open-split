@@ -1,8 +1,5 @@
 /**
- * HTTP surface.
- * Slice labels follow docs/04. Expense routes started in slice 1 and now accept every split & FX rate.
- * Virtual members, claim, and joining by invite are slice 2. Settlements, payment profiles, and summaries are slice 3.
- * FX conversion is slice 4. R2 receipt attachments and OAuth 2.1 + MCP server are slice 5.
+ * HTTP API route catalog and zero-runtime-Zod path builders shared by Worker and Web.
  */
 export const plannedHttpRoutes = [
   { method: "GET", path: "/health", slice: "0", summary: "存活檢查" },
@@ -40,3 +37,36 @@ export const plannedHttpRoutes = [
 ] as const;
 
 export type PlannedHttpRoute = (typeof plannedHttpRoutes)[number];
+
+const seg = (value: string): string => encodeURIComponent(value);
+
+/** Zero-runtime-Zod URL builders shared with apps/web so endpoints stay in one place. */
+export const apiPaths = {
+  health: () => "/health",
+  devSession: () => "/api/dev/session",
+  devUsers: () => "/api/dev/users",
+  session: () => "/api/session",
+  groups: () => "/api/groups",
+  group: (groupId: string) => `/api/groups/${seg(groupId)}`,
+  groupMembers: (groupId: string) => `/api/groups/${seg(groupId)}/members`,
+  memberClaimLink: (groupId: string, memberId: string) => `/api/groups/${seg(groupId)}/members/${seg(memberId)}/claim-link`,
+  memberPaymentProfile: (groupId: string, memberId: string) =>
+    `/api/groups/${seg(groupId)}/members/${seg(memberId)}/payment-profile`,
+  claim: (token: string) => `/api/claims/${seg(token)}`,
+  groupInvites: (groupId: string) => `/api/groups/${seg(groupId)}/invites`,
+  invite: (token: string) => `/api/invites/${seg(token)}`,
+  inviteAccept: (token: string) => `/api/invites/${seg(token)}/accept`,
+  groupExpenses: (groupId: string) => `/api/groups/${seg(groupId)}/expenses`,
+  groupExpense: (groupId: string, expenseId: string) => `/api/groups/${seg(groupId)}/expenses/${seg(expenseId)}`,
+  groupExpenseVoid: (groupId: string, expenseId: string) => `/api/groups/${seg(groupId)}/expenses/${seg(expenseId)}/void`,
+  groupBalances: (groupId: string) => `/api/groups/${seg(groupId)}/balances`,
+  groupSettlementPlan: (groupId: string) => `/api/groups/${seg(groupId)}/settlement-plan`,
+  groupSettlements: (groupId: string) => `/api/groups/${seg(groupId)}/settlements`,
+  groupSettlementVoid: (groupId: string, settlementId: string) =>
+    `/api/groups/${seg(groupId)}/settlements/${seg(settlementId)}/void`,
+  groupSummary: (groupId: string) => `/api/groups/${seg(groupId)}/summary`,
+  groupActivity: (groupId: string) => `/api/groups/${seg(groupId)}/activity`,
+  groupAttachments: (groupId: string) => `/api/groups/${seg(groupId)}/attachments`,
+  groupAttachmentUploadIntent: (groupId: string) => `/api/groups/${seg(groupId)}/attachments/upload-intent`,
+  groupAttachment: (groupId: string, attachmentId: string) => `/api/groups/${seg(groupId)}/attachments/${seg(attachmentId)}`,
+} as const;

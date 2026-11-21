@@ -1,3 +1,3 @@
-import { createWorkerHandler } from "./mcp/oauth.ts";
+import { createWorkerHandler } from "./entry/worker.ts";
 
 export default createWorkerHandler();

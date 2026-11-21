@@ -11,7 +11,6 @@ import {
   idSchema,
   inviteTokenSchema,
   paymentProfileWriteSchema,
-  plannedHttpRoutes,
   settlementWriteSchema,
 } from "@open-split/contracts";
 import { Hono, type Context } from "hono";
@@ -55,7 +54,7 @@ import {
   voidSettlement,
   type SessionUser,
 } from "../ledger/service.ts";
-import { readBoundedBytes } from "../mcp/server.ts";
+import { readBoundedBytes } from "../shared/bytes.ts";
 
 const SESSION_COOKIE = "os_session";
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
@@ -404,15 +403,8 @@ export function createApp() {
   });
 
   app.all("/api/*", (c) => {
-    console.log(JSON.stringify({ message: "not_implemented", path: c.req.path }));
-    return c.json(
-      {
-        error: "not_implemented",
-        detail: "這個路徑還沒有實作。見 docs/04-vertical-slices.md。",
-        routes: plannedHttpRoutes,
-      },
-      501,
-    );
+    console.log(JSON.stringify({ message: "api_not_found", path: c.req.path }));
+    return c.json({ error: "not_found", detail: "找不到這個 API 路徑。" }, 404);
   });
 
   return app;

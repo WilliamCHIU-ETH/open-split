@@ -80,6 +80,54 @@ module.exports = {
       from: { path: "(^|/)apps/web/" },
       to: { path: "(^|/)packages/auth/" },
     },
+    {
+      name: "worker-http-no-mcp",
+      severity: "error",
+      comment:
+        "apps/worker/src/http 不能匯入 apps/worker/src/mcp。WHY: HTTP 與 MCP 是平行傳輸層，共用工具請下沉到 src/shared 或 src/ledger，避免跨傳輸耦合（ADR-0010）。",
+      from: { path: "(^|/)apps/worker/src/http/" },
+      to: { path: "(^|/)apps/worker/src/mcp/" },
+    },
+    {
+      name: "worker-mcp-no-http",
+      severity: "error",
+      comment:
+        "apps/worker/src/mcp 不能匯入 apps/worker/src/http。WHY: Worker 入口由 src/entry/worker.ts 組裝，不由 OAuth/MCP 反向包住 HTTP（ADR-0010）。",
+      from: { path: "(^|/)apps/worker/src/mcp/" },
+      to: { path: "(^|/)apps/worker/src/http/" },
+    },
+    {
+      name: "worker-ledger-no-transport",
+      severity: "error",
+      comment:
+        "apps/worker/src/ledger 不能依賴 http、mcp 或 entry。WHY: 服務層必須與傳輸層無關，HTTP 與 MCP 才能共用同一套用例與事件（ADR-0010）。",
+      from: { path: "(^|/)apps/worker/src/ledger/" },
+      to: { path: "(^|/)apps/worker/src/(http|mcp|entry)/" },
+    },
+    {
+      name: "worker-shared-is-leaf",
+      severity: "error",
+      comment:
+        "apps/worker/src/shared 不能依賴 http、mcp、entry 或 db。WHY: 共用工具屬於底層葉節點，不可形成循環依賴（ADR-0010）。",
+      from: { path: "(^|/)apps/worker/src/shared/" },
+      to: { path: "(^|/)apps/worker/src/(http|mcp|entry|db)/" },
+    },
+    {
+      name: "worker-db-is-leaf",
+      severity: "error",
+      comment:
+        "apps/worker/src/db 不能依賴 http、mcp、ledger 或 entry。WHY: 資料層 schema 與 client 屬於基礎設施葉節點（ADR-0010）。",
+      from: { path: "(^|/)apps/worker/src/db/" },
+      to: { path: "(^|/)apps/worker/src/(http|mcp|ledger|entry)/" },
+    },
+    {
+      name: "contracts-client-no-zod",
+      severity: "error",
+      comment:
+        "@open-split/contracts/client 及其底層檔不得匯入 zod。WHY: 瀏覽器端透過此子入口取得常數與 API 路徑，保持零 Zod 執行期體積（ADR-0010）。",
+      from: { path: "(^|/)packages/contracts/src/(client|attachment-limits|routes)\\.ts$" },
+      to: { path: "(^zod$|/node_modules/zod/)" },
+    },
   ],
   options: {
     doNotFollow: { path: "node_modules" },

@@ -6,7 +6,28 @@ import {
   attachmentUploadIntentResultSchema,
 } from "./attachments.ts";
 import { expenseInputSchema, expenseResultSchema } from "./expense.ts";
-import { currencyCodeSchema, idempotencyKeySchema, idSchema, signedMinorSchema } from "./money.ts";
+import {
+  activityEntrySchema,
+  activityResultSchema,
+  addMemberInputSchema,
+  addMemberResultSchema,
+  balanceWireSchema,
+  balancesResultSchema,
+  createGroupInputSchema,
+  createGroupResultSchema,
+  groupDetailSchema,
+  groupListSchema,
+  groupSchema,
+  groupSummarySchema,
+  inviteResultSchema,
+  memberSchema,
+  voidExpenseResultSchema,
+  type ActivityResult,
+  type BalancesResult,
+  type Group,
+  type Member,
+} from "./ledger.ts";
+import { idempotencyKeySchema, idSchema } from "./money.ts";
 import {
   paymentProfileClearResultSchema,
   paymentProfileUpdateResultSchema,
@@ -17,116 +38,25 @@ import {
   settlementWriteSchema,
 } from "./settlement.ts";
 
+export {
+  activityEntrySchema,
+  activityResultSchema,
+  addMemberInputSchema,
+  balanceWireSchema,
+  balancesResultSchema,
+  createGroupInputSchema,
+  groupSchema,
+  memberSchema,
+  voidExpenseResultSchema,
+  type ActivityResult,
+  type BalancesResult,
+  type Group,
+  type Member,
+};
+
 export type McpScope = "mcp:read" | "mcp:write";
 
-export const groupSchema = z.strictObject({
-  id: idSchema,
-  name: z.string().min(1).max(80),
-  defaultCurrency: currencyCodeSchema,
-});
-
-export const memberSchema = z.strictObject({
-  id: idSchema,
-  groupId: idSchema,
-  displayName: z.string().min(1).max(80),
-  userId: idSchema.nullable(),
-  role: z.enum(["owner", "member"]),
-  virtual: z.boolean(),
-  claimedAt: z.string().min(1).nullable(),
-});
-
-export const addMemberInputSchema = z
-  .strictObject({
-    groupId: idSchema,
-    displayName: z.string().min(1).max(80),
-    virtual: z.boolean(),
-    userId: idSchema.optional(),
-  })
-  .superRefine((value, context) => {
-    if (value.virtual && value.userId !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["userId"],
-        message: "虛擬成員不能連結使用者。",
-      });
-    }
-    if (!value.virtual && value.userId === undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["userId"],
-        message: "已登入的成員需要 userId。還沒有帳號的人請設 virtual。",
-      });
-    }
-  });
-
-export const balanceWireSchema = z.strictObject({
-  participantId: idSchema,
-  net: signedMinorSchema,
-});
-
-export const balancesResultSchema = z.strictObject({
-  groupId: idSchema,
-  currency: currencyCodeSchema,
-  balances: z.array(balanceWireSchema),
-  sum: signedMinorSchema,
-});
-
-export const activityEntrySchema = z.strictObject({
-  id: idSchema,
-  action: z.string().min(1),
-  entityId: idSchema,
-  createdAt: z.string().min(1),
-  summary: z.string().min(1),
-  actorDisplayName: z.string().min(1).nullable(),
-  via: z.enum(["web", "mcp"]),
-  clientId: z.string().min(1).nullable(),
-});
-
-export const activityResultSchema = z.strictObject({
-  entries: z.array(activityEntrySchema),
-});
-
-export const voidExpenseResultSchema = z.strictObject({
-  id: idSchema,
-  voided: z.literal(true),
-});
-
 const emptyInput = z.strictObject({});
-
-export const createGroupInputSchema = z.strictObject({
-  name: z.string().min(1).max(80),
-  defaultCurrency: currencyCodeSchema,
-});
-
-const groupDetailOutputStub = z.strictObject({
-  group: groupSchema,
-  members: z.array(memberSchema.extend({ paymentProfile: paymentProfileWriteSchema.nullable() })),
-  expenses: z.array(z.record(z.string(), z.unknown())),
-  settlements: z.array(z.record(z.string(), z.unknown())),
-  balances: z.array(balanceWireSchema),
-});
-
-const groupSummaryOutputStub = z.strictObject({
-  currency: currencyCodeSchema,
-  members: z.array(
-    z.strictObject({
-      memberId: idSchema,
-      paid: signedMinorSchema,
-      share: signedMinorSchema,
-      settledPaid: signedMinorSchema,
-      settledReceived: signedMinorSchema,
-      net: signedMinorSchema,
-    }),
-  ),
-  categories: z.array(
-    z.strictObject({
-      category: z.string().nullable(),
-      total: signedMinorSchema,
-      count: z.number().int().positive(),
-    }),
-  ),
-  totalSpent: signedMinorSchema,
-});
 
 export const mcpToolContracts = [
   {
@@ -136,7 +66,7 @@ export const mcpToolContracts = [
     readOnly: true,
     description: "List all split groups that the authorized user belongs to.",
     input: emptyInput,
-    output: z.strictObject({ groups: z.array(groupSchema) }),
+    output: groupListSchema,
   },
   {
     name: "get_group",
@@ -145,7 +75,7 @@ export const mcpToolContracts = [
     readOnly: true,
     description: "Read group metadata, members, expenses, settlements, and net balances.",
     input: z.strictObject({ groupId: idSchema }),
-    output: groupDetailOutputStub,
+    output: groupDetailSchema,
   },
   {
     name: "create_group",
@@ -154,7 +84,7 @@ export const mcpToolContracts = [
     readOnly: false,
     description: "Create a new group with a fixed ISO 4217 default currency.",
     input: createGroupInputSchema.safeExtend({ idempotencyKey: idempotencyKeySchema.optional() }),
-    output: groupSchema.extend({ ownerMemberId: idSchema }),
+    output: createGroupResultSchema,
   },
   {
     name: "add_member",
@@ -163,9 +93,7 @@ export const mcpToolContracts = [
     readOnly: false,
     description: "Add a virtual placeholder member or an existing user to a group.",
     input: addMemberInputSchema.safeExtend({ idempotencyKey: idempotencyKeySchema.optional() }),
-    output: memberSchema.extend({
-      claim: z.strictObject({ claimPath: z.string().min(1), token: z.string().min(1) }).nullable(),
-    }),
+    output: addMemberResultSchema,
   },
   {
     name: "create_invite",
@@ -174,7 +102,7 @@ export const mcpToolContracts = [
     readOnly: false,
     description: "Generate a group invite link for another person to join.",
     input: z.strictObject({ groupId: idSchema, idempotencyKey: idempotencyKeySchema.optional() }),
-    output: z.strictObject({ invitePath: z.string().min(1), token: z.string().min(1) }),
+    output: inviteResultSchema,
   },
   {
     name: "add_expense",
@@ -228,7 +156,7 @@ export const mcpToolContracts = [
     readOnly: true,
     description: "Read per-member totals and per-category spending breakdown in group default currency.",
     input: z.strictObject({ groupId: idSchema }),
-    output: groupSummaryOutputStub,
+    output: groupSummarySchema,
   },
   {
     name: "record_settlement",
@@ -310,10 +238,6 @@ export const mcpToolContracts = [
 
 export type McpToolName = (typeof mcpToolContracts)[number]["name"];
 export type McpToolContract = (typeof mcpToolContracts)[number];
-export type BalancesResult = z.infer<typeof balancesResultSchema>;
-export type ActivityResult = z.infer<typeof activityResultSchema>;
-export type Member = z.infer<typeof memberSchema>;
-export type Group = z.infer<typeof groupSchema>;
 
 export interface McpToolDefinition {
   readonly name: McpToolName;
