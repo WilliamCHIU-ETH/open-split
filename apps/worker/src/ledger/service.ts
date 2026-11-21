@@ -1,12 +1,10 @@
-import { and, asc, desc, eq, exists, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, exists, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
-  splitSchema,
   type ExpenseInput,
   type GroupDetail,
   type GroupSummary,
   type PaymentProfileWrite,
   type SettlementPreview,
-  type SettlementView,
   type SettlementWrite,
   type SplitWire,
   parseUnsignedMinor,
@@ -26,7 +24,6 @@ import {
   transferBound,
   ZERO_MINOR,
   type Minor,
-  type NetBalance,
   type Share,
   type SplitSpec,
 } from "@open-split/core";
@@ -38,37 +35,44 @@ import {
   expenses,
   groupMembers,
   groups,
-  inviteLinks,
   paymentProfiles,
   settlements,
   users,
 } from "../db/schema.ts";
-import {
-  clearUnusedAttachmentLink,
-  toAttachmentSummary,
-  validateAttachmentsForExpense,
-} from "./attachments.ts";
+import { clearUnusedAttachmentLink, validateAttachmentsForExpense } from "./attachments.ts";
 import {
   activityInsert,
   blankToNull,
   DEFAULT_AUDIT,
-  isDuplicateMembership,
-  listMembers,
   readActivityMeta,
-  requireGroup,
   requireMembership,
   toMember,
-  type AttachmentRow,
   type AuditContext,
   type ExpenseRow,
   type MemberRow,
   type SessionUser,
-  type ShareRow,
 } from "./context.ts";
 import { ServiceError } from "./errors.ts";
-import { newId, newSecret, sha256Hex } from "./ids.ts";
+import { newId } from "./ids.ts";
+import {
+  activeLedger,
+  loadLedger,
+  projectBalances,
+  toExpenseView,
+  toSettlementView,
+  wireBalances,
+} from "./projection.ts";
 
 export type { AuditContext, SessionUser } from "./context.ts";
+export {
+  acceptInvite,
+  addMember,
+  claimMember,
+  createInvite,
+  previewClaim,
+  previewInvite,
+  rotateClaimLink,
+} from "./members.ts";
 export {
   deleteSession,
   devSignIn,
@@ -157,103 +161,6 @@ export async function getGroupDetail(db: LedgerDb, actor: SessionUser, groupId: 
     ),
     settlements: ledger.settlementRows.map(toSettlementView),
     balances: wireBalances(computeBalances(active.expenses, active.transfers)),
-  };
-}
-
-export async function addMember(
-  db: LedgerDb,
-  actor: SessionUser,
-  input: { readonly groupId: string; readonly displayName: string; readonly virtual: boolean; readonly userId?: string },
-  audit: AuditContext = DEFAULT_AUDIT,
-) {
-  const { members } = await requireMembership(db, input.groupId, actor.userId);
-  if (input.virtual) {
-    const now = new Date();
-    const memberId = newId("mem");
-    const token = newSecret();
-    await db.batch([
-      db.insert(groupMembers).values({
-        id: memberId,
-        groupId: input.groupId,
-        displayName: input.displayName,
-        userId: null,
-        role: "member",
-        claimTokenHash: await sha256Hex(token),
-        claimedAt: null,
-        createdAt: now,
-      }),
-      activityInsert(db, {
-        groupId: input.groupId,
-        actorUserId: actor.userId,
-        action: "member.virtual_created",
-        entityType: "member",
-        entityId: memberId,
-        summary: `建立虛擬成員「${input.displayName}」`,
-        audit,
-        createdAt: now,
-      }),
-    ]);
-    return {
-      ...toMember({
-        id: memberId,
-        groupId: input.groupId,
-        displayName: input.displayName,
-        userId: null,
-        role: "member",
-        claimedAt: null,
-      }),
-      claim: { claimPath: `/claim/${token}`, token },
-    };
-  }
-
-  if (input.userId === undefined) {
-    throw new ServiceError(422, "user_required", "已登入的成員需要 userId。還沒有帳號的人請設 virtual。");
-  }
-  const linked = await db.select().from(users).where(eq(users.id, input.userId)).limit(1);
-  if (!linked[0]) throw new ServiceError(404, "not_found", "找不到要加入的使用者。請先讓對方在這台機器登入一次。");
-  if (members.some((member) => member.userId === input.userId)) {
-    throw new ServiceError(409, "already_member", "這個人已經在群組裡。");
-  }
-  const now = new Date();
-  const memberId = newId("mem");
-  const userId = input.userId;
-  try {
-    await db.batch([
-      db.insert(groupMembers).values({
-        id: memberId,
-        groupId: input.groupId,
-        displayName: input.displayName,
-        userId,
-        role: "member",
-        claimTokenHash: null,
-        claimedAt: null,
-        createdAt: now,
-      }),
-      activityInsert(db, {
-        groupId: input.groupId,
-        actorUserId: actor.userId,
-        action: "member.added",
-        entityType: "member",
-        entityId: memberId,
-        summary: `加入成員「${input.displayName}」`,
-        audit,
-        createdAt: now,
-      }),
-    ]);
-  } catch (error) {
-    if (isDuplicateMembership(error)) throw new ServiceError(409, "already_member", "這個人已經在群組裡。");
-    throw error;
-  }
-  return {
-    ...toMember({
-      id: memberId,
-      groupId: input.groupId,
-      displayName: input.displayName,
-      userId,
-      role: "member",
-      claimedAt: null,
-    }),
-    claim: null,
   };
 }
 
@@ -773,304 +680,11 @@ export async function listActivity(db: LedgerDb, actor: SessionUser, groupId: st
   };
 }
 
-export async function createInvite(
-  db: LedgerDb,
-  actor: SessionUser,
-  groupId: string,
-  audit: AuditContext = DEFAULT_AUDIT,
-) {
-  await requireMembership(db, groupId, actor.userId);
-  const token = crypto.randomUUID();
-  const now = new Date();
-  const inviteId = newId("inv");
-  await db.batch([
-    db.insert(inviteLinks).values({
-      id: inviteId,
-      groupId,
-      tokenHash: await sha256Hex(token),
-      expiresAt: null,
-      revokedAt: null,
-      createdByUserId: actor.userId,
-      createdAt: now,
-    }),
-    activityInsert(db, {
-      groupId,
-      actorUserId: actor.userId,
-      action: "invite.created",
-      entityType: "invite",
-      entityId: inviteId,
-      summary: "建立邀請連結",
-      audit,
-      createdAt: now,
-    }),
-  ]);
-  return { invitePath: `/invite/${token}`, token };
-}
-
-export async function previewInvite(db: LedgerDb, actor: SessionUser, token: string) {
-  const invite = await requireInvite(db, token);
-  const group = await requireGroup(db, invite.groupId);
-  const members = await listMembers(db, invite.groupId);
-  return {
-    groupId: group.id,
-    groupName: group.name,
-    currency: group.defaultCurrency,
-    alreadyMember: members.some((member) => member.userId === actor.userId),
-  };
-}
-
-export async function acceptInvite(db: LedgerDb, actor: SessionUser, token: string) {
-  const invite = await requireInvite(db, token);
-  const members = await listMembers(db, invite.groupId);
-  const existing = members.find((member) => member.userId === actor.userId);
-  if (existing) return { groupId: invite.groupId, member: toMember(existing), alreadyMember: true };
-  const now = new Date();
-  const memberId = newId("mem");
-  try {
-    await db.batch([
-      db.insert(groupMembers).values({
-        id: memberId,
-        groupId: invite.groupId,
-        displayName: actor.displayName,
-        userId: actor.userId,
-        role: "member",
-        claimTokenHash: null,
-        claimedAt: null,
-        createdAt: now,
-      }),
-      activityInsert(db, {
-        groupId: invite.groupId,
-        actorUserId: actor.userId,
-        action: "member.joined",
-        entityType: "member",
-        entityId: memberId,
-        summary: `用邀請連結加入，成為「${actor.displayName}」`,
-        audit: DEFAULT_AUDIT,
-        createdAt: now,
-      }),
-    ]);
-  } catch (error) {
-    if (!isDuplicateMembership(error)) throw error;
-    const winner = (await listMembers(db, invite.groupId)).find((member) => member.userId === actor.userId);
-    if (!winner) throw new ServiceError(409, "already_member", "你已經是這個群組的成員。");
-    return { groupId: invite.groupId, member: toMember(winner), alreadyMember: true };
-  }
-  return {
-    groupId: invite.groupId,
-    member: toMember({
-      id: memberId,
-      groupId: invite.groupId,
-      displayName: actor.displayName,
-      userId: actor.userId,
-      role: "member",
-      claimedAt: null,
-    }),
-    alreadyMember: false,
-  };
-}
-
-export async function previewClaim(db: LedgerDb, actor: SessionUser, token: string) {
-  const member = await findClaimMember(db, token);
-  const group = await requireGroup(db, member.groupId);
-  const members = await listMembers(db, member.groupId);
-  const mine = members.find((row) => row.userId === actor.userId);
-  let status: "open" | "yours" | "taken" | "already_member";
-  if (member.userId === actor.userId) status = "yours";
-  else if (member.userId !== null) status = "taken";
-  else if (mine) status = "already_member";
-  else status = "open";
-  return {
-    groupId: group.id,
-    groupName: group.name,
-    currency: group.defaultCurrency,
-    memberId: member.id,
-    displayName: member.displayName,
-    status,
-  };
-}
-
-export async function claimMember(db: LedgerDb, actor: SessionUser, token: string) {
-  const member = await findClaimMember(db, token);
-  if (member.userId !== null) {
-    throw new ServiceError(409, "already_claimed", "這位成員已經被認領。");
-  }
-  const members = await listMembers(db, member.groupId);
-  if (members.some((row) => row.userId === actor.userId)) {
-    throw new ServiceError(409, "already_member", "你已經是這個群組的成員，不能再認領另一個位置。");
-  }
-  const now = new Date();
-  try {
-    await db
-      .update(groupMembers)
-      .set({ userId: actor.userId, claimedAt: now, claimTokenHash: null })
-      .where(and(eq(groupMembers.id, member.id), isNull(groupMembers.userId)));
-  } catch (error) {
-    if (isDuplicateMembership(error)) {
-      throw new ServiceError(409, "already_member", "你已經是這個群組的成員，不能再認領另一個位置。");
-    }
-    throw error;
-  }
-  const saved = await db.select().from(groupMembers).where(eq(groupMembers.id, member.id)).limit(1);
-  const row = saved[0];
-  if (!row || row.userId !== actor.userId) {
-    throw new ServiceError(409, "claim_conflict", "這位成員剛剛被認領了。");
-  }
-  await db.batch([
-    activityInsert(db, {
-      groupId: member.groupId,
-      actorUserId: actor.userId,
-      action: "member.claimed",
-      entityType: "member",
-      entityId: member.id,
-      summary: `認領了「${member.displayName}」。過去的份額仍掛在同一位成員。`,
-      audit: DEFAULT_AUDIT,
-      createdAt: now,
-    }),
-  ]);
-  return { groupId: member.groupId, member: toMember(row) };
-}
-
-export async function rotateClaimLink(db: LedgerDb, actor: SessionUser, groupId: string, memberId: string) {
-  await requireMembership(db, groupId, actor.userId);
-  const rows = await db.select().from(groupMembers).where(eq(groupMembers.id, memberId)).limit(1);
-  const member = rows[0];
-  if (!member || member.groupId !== groupId) throw new ServiceError(404, "not_found", "找不到這位成員。");
-  if (member.userId !== null) {
-    throw new ServiceError(409, "already_claimed", "這位成員已經認領，不能再發認領連結。");
-  }
-  const token = newSecret();
-  const now = new Date();
-  await db.batch([
-    db
-      .update(groupMembers)
-      .set({ claimTokenHash: await sha256Hex(token) })
-      .where(and(eq(groupMembers.id, memberId), isNull(groupMembers.userId))),
-    activityInsert(db, {
-      groupId,
-      actorUserId: actor.userId,
-      action: "member.claim_link_rotated",
-      entityType: "member",
-      entityId: memberId,
-      summary: `重新產生「${member.displayName}」的認領連結。舊連結失效。`,
-      audit: DEFAULT_AUDIT,
-      createdAt: now,
-    }),
-  ]);
-  return { claimPath: `/claim/${token}`, token };
-}
-
-async function requireInvite(db: LedgerDb, token: string) {
-  const rows = await db
-    .select()
-    .from(inviteLinks)
-    .where(eq(inviteLinks.tokenHash, await sha256Hex(token)))
-    .limit(1);
-  const invite = rows[0];
-  if (!invite || invite.revokedAt) throw new ServiceError(404, "not_found", "這條邀請連結無效。");
-  if (invite.expiresAt && invite.expiresAt.getTime() <= Date.now()) {
-    throw new ServiceError(404, "not_found", "這條邀請連結已經過期。");
-  }
-  return invite;
-}
-
-async function findClaimMember(db: LedgerDb, token: string): Promise<MemberRow> {
-  const rows = await db
-    .select()
-    .from(groupMembers)
-    .where(eq(groupMembers.claimTokenHash, await sha256Hex(token)))
-    .limit(1);
-  const member = rows[0];
-  if (!member) throw new ServiceError(404, "not_found", "這條認領連結無效，或這位成員已經被認領。");
-  return member;
-}
-
 async function loadExpense(db: LedgerDb, groupId: string, expenseId: string): Promise<ExpenseRow> {
   const rows = await db.select().from(expenses).where(eq(expenses.id, expenseId)).limit(1);
   const row = rows[0];
   if (!row || row.groupId !== groupId) throw new ServiceError(404, "not_found", "找不到這筆支出。");
   return row;
-}
-
-async function loadLedger(db: LedgerDb, groupId: string) {
-  const [expenseRows, shareRows, settlementRows, attachmentRows] = await db.batch([
-    db.select().from(expenses).where(eq(expenses.groupId, groupId)).orderBy(asc(expenses.createdAt), asc(expenses.id)),
-    db.select({
-      expenseId: expenseShares.expenseId,
-      memberId: expenseShares.memberId,
-      amountMinor: expenseShares.amountMinor,
-      originalAmountMinor: expenseShares.originalAmountMinor,
-    })
-      .from(expenseShares)
-      .innerJoin(expenses, eq(expenses.id, expenseShares.expenseId))
-      .where(eq(expenses.groupId, groupId))
-      .orderBy(asc(expenseShares.memberId)),
-    db.select().from(settlements).where(eq(settlements.groupId, groupId))
-      .orderBy(desc(settlements.createdAt), desc(settlements.id)),
-    db.select().from(attachments)
-      .where(and(eq(attachments.groupId, groupId), eq(attachments.status, "ready"), isNull(attachments.deletedAt)))
-      .orderBy(asc(attachments.createdAt), asc(attachments.id)),
-  ]);
-  const shares = new Map<string, ShareRow[]>();
-  for (const row of shareRows) {
-    const list = shares.get(row.expenseId) ?? [];
-    list.push(row);
-    shares.set(row.expenseId, list);
-  }
-  const attachmentsByExpense = new Map<string, AttachmentRow[]>();
-  for (const row of attachmentRows) {
-    if (!row.expenseId) continue;
-    const list = attachmentsByExpense.get(row.expenseId) ?? [];
-    list.push(row);
-    attachmentsByExpense.set(row.expenseId, list);
-  }
-  return { expenseRows, shares, settlementRows, attachmentsByExpense };
-}
-
-function activeLedger({ expenseRows, shares, settlementRows }: Awaited<ReturnType<typeof loadLedger>>) {
-  const activeExpenses = expenseRows.filter((row) => row.voidedAt === null).map((row) => {
-    const parts = shares.get(row.id) ?? [];
-    if (parts.length === 0) throw new ServiceError(500, "missing_shares", "這筆支出沒有份額。");
-    return {
-      payerId: row.payerMemberId,
-      amount: minorFromSafeInteger(row.convertedAmountMinor ?? row.amountMinor),
-      participantIds: parts.map((part) => part.memberId),
-      split: {
-        type: "exact" as const,
-        amounts: Object.fromEntries(parts.map(({ memberId, amountMinor }) => [memberId, minorFromSafeInteger(amountMinor)])),
-      },
-      category: row.category,
-    };
-  });
-  const transfers = settlementRows.filter((row) => row.voidedAt === null).map((row) => ({
-    fromId: row.fromMemberId,
-    toId: row.toMemberId,
-    amount: minorFromSafeInteger(row.amountMinor),
-  }));
-  return { expenses: activeExpenses, transfers };
-}
-
-async function projectBalances(db: LedgerDb, groupId: string) {
-  const { expenses, transfers } = activeLedger(await loadLedger(db, groupId));
-  return computeBalances(expenses, transfers);
-}
-
-function wireBalances(nets: readonly NetBalance[]) {
-  return nets.map(({ participantId, net }) => ({ participantId, net: formatMinor(net) }));
-}
-
-function toSettlementView(row: typeof settlements.$inferSelect): SettlementView {
-  return {
-    id: row.id,
-    fromMemberId: row.fromMemberId,
-    toMemberId: row.toMemberId,
-    amount: formatMinor(minorFromSafeInteger(row.amountMinor)),
-    currency: row.currency,
-    note: row.note,
-    voided: row.voidedAt !== null,
-    voidedAt: row.voidedAt?.toISOString() ?? null,
-    createdAt: row.createdAt.toISOString(),
-    createdByUserId: row.createdByUserId,
-  };
 }
 
 function prepareExpense(defaultCurrency: string, members: readonly MemberRow[], input: ExpenseInput) {
@@ -1150,41 +764,6 @@ function wireShares(shares: readonly Share[]) {
   }));
 }
 
-function toExpenseView(
-  row: ExpenseRow,
-  defaultCurrency: string,
-  shares: readonly ShareRow[],
-  attachmentRows: readonly AttachmentRow[],
-) {
-  const convertedMinor = minorFromSafeInteger(row.convertedAmountMinor ?? row.amountMinor);
-  return {
-    id: row.id,
-    payerId: row.payerMemberId,
-    amount: formatMinor(minorFromSafeInteger(row.amountMinor)),
-    currency: row.currency,
-    convertedAmount: formatMinor(convertedMinor),
-    convertedCurrency: defaultCurrency,
-    fxRate:
-      row.fxNumerator !== null && row.fxDenominator !== null
-        ? { numerator: row.fxNumerator, denominator: row.fxDenominator }
-        : null,
-    participantIds: shares.map((share) => share.memberId),
-    split: readSplit(row.splitJson),
-    category: row.category,
-    note: row.note,
-    voided: row.voidedAt !== null,
-    shares: shares.map((share) => ({
-      participantId: share.memberId,
-      amount: formatMinor(minorFromSafeInteger(share.amountMinor)),
-    })),
-    originalShares: shares.map((share) => ({
-      participantId: share.memberId,
-      amount: formatMinor(minorFromSafeInteger(share.originalAmountMinor ?? share.amountMinor)),
-    })),
-    attachments: attachmentRows.map(toAttachmentSummary),
-  };
-}
-
 function expenseSummary(verb: string, input: ExpenseInput, defaultCurrency: string, convertedAmount: Minor): string {
   const trimmedCategory = input.category?.trim();
   const category = trimmedCategory ? `，${trimmedCategory}` : "";
@@ -1209,17 +788,4 @@ function toCoreSplit(split: SplitWire): SplitSpec {
   const amounts: Record<string, Minor> = {};
   for (const [id, value] of Object.entries(split.amounts)) amounts[id] = parseUnsignedMinor(value);
   return { type: "exact", amounts };
-}
-
-function readSplit(raw: string | null): SplitWire {
-  if (raw === null || raw.length === 0) return { type: "equal" };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    throw new ServiceError(500, "bad_split", "這筆支出的分法讀不出來。");
-  }
-  const result = splitSchema.safeParse(parsed);
-  if (!result.success) throw new ServiceError(500, "bad_split", "這筆支出的分法讀不出來。");
-  return result.data;
 }
