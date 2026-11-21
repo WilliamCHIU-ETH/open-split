@@ -7,16 +7,11 @@ import { installFormValidity } from "./form-validity.ts";
 import { Home } from "./Home.tsx";
 import { Invite } from "./Invite.tsx";
 import { Ledger } from "./Ledger.tsx";
+import { parseRoute, readBrowserLocation, routeTitle, shouldInterceptNavigation } from "./router.ts";
 import { SignIn } from "./SignIn.tsx";
 
-type Route =
-  | { readonly name: "home" }
-  | { readonly name: "group"; readonly id: string }
-  | { readonly name: "invite"; readonly token: string }
-  | { readonly name: "claim"; readonly token: string };
-
 export function App() {
-  const [path, setPath] = useState(() => window.location.pathname);
+  const [location, setLocation] = useState(readBrowserLocation);
   const [ready, setReady] = useState(false);
   const [devEnabled, setDevEnabled] = useState(false);
   const [session, setSession] = useState<CurrentSession | null>(null);
@@ -33,15 +28,24 @@ export function App() {
       const anchor = target.closest("a");
       if (!anchor) return;
       const href = anchor.getAttribute("href");
-      if (!href || href.startsWith("#") || anchor.target === "_blank") return;
+      if (
+        !shouldInterceptNavigation({
+          href,
+          resolvedHref: anchor.href,
+          origin: window.location.origin,
+          target: anchor.getAttribute("target"),
+          hasDownload: anchor.hasAttribute("download"),
+        })
+      ) {
+        return;
+      }
       const url = new URL(anchor.href, window.location.origin);
-      if (url.origin !== window.location.origin) return;
       event.preventDefault();
-      window.history.pushState({}, "", `${url.pathname}${url.search}`);
-      setPath(url.pathname);
+      window.history.pushState({}, "", `${url.pathname}${url.search}${url.hash}`);
+      setLocation({ pathname: url.pathname, search: url.search });
     }
     function onPop() {
-      setPath(window.location.pathname);
+      setLocation(readBrowserLocation());
     }
     document.addEventListener("click", onClick);
     window.addEventListener("popstate", onPop);
@@ -80,9 +84,8 @@ export function App() {
     };
   }, []);
 
-  const route = parseRoute(path);
-  const title =
-    route.name === "group" ? "群組帳本" : route.name === "invite" ? "邀請連結" : route.name === "claim" ? "認領" : "open-split 帳本";
+  const route = parseRoute(location.pathname);
+  const title = routeTitle(route);
   useEffect(() => {
     document.title = `${title} · open-split`;
   }, [title]);
@@ -93,7 +96,7 @@ export function App() {
     await api.signOut();
     setSession(null);
     window.history.pushState({}, "", "/");
-    setPath("/");
+    setLocation({ pathname: "/", search: "" });
   }
 
   return (
@@ -152,17 +155,4 @@ export function App() {
       </main>
     </>
   );
-}
-
-function parseRoute(pathname: string): Route {
-  const group = /^\/groups\/([A-Za-z][A-Za-z0-9_-]{0,80})$/.exec(pathname);
-  const groupId = group?.[1];
-  if (groupId) return { name: "group", id: groupId };
-  const invite = /^\/invite\/([^/]+)$/.exec(pathname);
-  const inviteToken = invite?.[1];
-  if (inviteToken) return { name: "invite", token: decodeURIComponent(inviteToken) };
-  const claim = /^\/claim\/([^/]+)$/.exec(pathname);
-  const claimToken = claim?.[1];
-  if (claimToken) return { name: "claim", token: decodeURIComponent(claimToken) };
-  return { name: "home" };
 }

@@ -34,13 +34,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: cp apps/worker/.dev.vars.example apps/worker/.dev.vars
+      - run: pnpm --filter @open-split/web build
       - run: pnpm --filter @open-split/worker exec wrangler d1 migrations apply open-split --local
       - name: Start local Worker
         run: |
           nohup pnpm --filter @open-split/worker exec wrangler dev --port 8787 --ip 127.0.0.1 > "$RUNNER_TEMP/wrangler.log" 2>&1 &
           for i in $(seq 1 90); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/ || true)
-            if [ "$code" != "000" ]; then echo "worker up ($code)"; exit 0; fi
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/health || true)
+            if [ "$code" = "200" ]; then echo "worker up ($code)"; exit 0; fi
             sleep 2
           done
           cat "$RUNNER_TEMP/wrangler.log"

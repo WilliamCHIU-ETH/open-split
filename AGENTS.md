@@ -12,10 +12,11 @@
 | --- | --- |
 | 任何工作 | `docs/00-intent.md`、`docs/05-agent-workflow.md` |
 | 一個切片 | `docs/04-vertical-slices.md` 對應的那片、`docs/feature-map.md` |
-| 架構、表、契約 | `docs/02-system-architecture.md`、`docs/03-program-design.md` |
+| 架構、表、契約 | `docs/02-system-architecture.md`、`docs/03-program-design.md`、`docs/adr/0010-long-term-architecture.md` |
 | 登入、MCP、權限 | ADR-0003、ADR-0005、ADR-0007、ADR-0009（0009 取代 0007 的 Google 白名單） |
 | 金額、多幣別 | ADR-0002、ADR-0006 |
-| `apps/web` | `docs/frontend-quality.md`、`.cursor/rules/web-frontend.mdc` |
+| `apps/worker` | `apps/worker/AGENTS.md` |
+| `apps/web` | `apps/web/AGENTS.md`、`docs/frontend-quality.md` |
 
 ## 程式碼規則
 

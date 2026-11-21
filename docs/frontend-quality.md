@@ -4,7 +4,7 @@
 
 ## 代理人怎麼查
 
-專案鎖定 `modern-web-guidance@1.0.1`，技能在 `.cursor/skills/modern-web-guidance/SKILL.md`。
+專案鎖定 `modern-web-guidance@1.0.1`，技能在 `.agents/skills/modern-web-guidance/SKILL.md`。
 
 ```sh
 DISABLE_TELEMETRY=1 pnpm exec modern-web-guidance search "confirmation modal dialog"
@@ -23,8 +23,8 @@ DISABLE_TELEMETRY=1 pnpm exec modern-web-guidance retrieve "<id>"
 - **LINE 內建瀏覽器與一般瀏覽器都要能記帳。** 不偵測 user agent 來做兩套 UI。
 - **語意 HTML。** 標題、主內容、清單、按鈕與連結各用各的元素。表單控制項要有標籤。鍵盤能到達並看得到焦點。
 - **對比。** 文字與背景要能分開。不要只用顏色傳達狀態。
-- **少依賴。** `apps/web` 的執行期依賴只允許 `react`、`react-dom`、`@open-split/contracts`，以及預覽分帳用的 `@open-split/core`。對話框用 `<dialog>`，popover 用平台的 popover，不要先加元件庫。
-- **效能。** 建置後的 JS gzip 合計不得超過 150 KiB。現在的空殼大約 96 KiB，剩下的空間不是拿來裝 UI 框架的。
+- **少依賴。** `apps/web` 的執行期依賴只允許 `react`、`react-dom`、`@open-split/contracts`（值匯入走 `@open-split/contracts/client`，不把 Zod 打包進瀏覽器），以及預覽分帳用的 `@open-split/core`。對話框用 `<dialog>`，popover 用平台的 popover，不要先加元件庫。
+- **效能。** 建置後的 JS gzip 合計不得超過 150 KiB。移除前端 Zod 打包後目前約 88 KiB，剩下的空間留給切片 6 的 `@line/liff` 與後續帳本能力，不是拿來裝 UI 框架的。
 
 ## 已經會失敗的檢查
 
@@ -38,8 +38,4 @@ DISABLE_TELEMETRY=1 pnpm exec modern-web-guidance retrieve "<id>"
 
 這三項都在 `pnpm check` 裡。它們不需要 Chrome。
 
-Lighthouse 沒有放進 `pnpm check`。空殼的分數約束不了之後的真畫面，而且內圈要在沒有瀏覽器的環境也能跑。切片 1 的真帳本頁要另外對這三個分數負責：效能 ≥ 0.9、無障礙 ≥ 0.95、最佳實踐 ≥ 0.9。到時候用本機 Chrome 跑，不要用空殼的分數充數。
-
-## 現在的畫面
-
-`apps/web` 只是空殼：說明切片 1 還沒做，並列出預定 API。沒有假的記帳按鈕。
+Lighthouse 沒有放進 `pnpm check`，內圈要在沒有瀏覽器的環境也能跑。帳本主畫面另行對這三個分數負責：效能 ≥ 0.9、無障礙 ≥ 0.95、最佳實踐 ≥ 0.9，於本機 Chrome 定期驗證。
