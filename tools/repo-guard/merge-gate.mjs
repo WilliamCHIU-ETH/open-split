@@ -17,9 +17,21 @@ const OWNER_FILES = new Set([
   "docs/00-intent.md",
   "docs/01-product-review.md",
   "docs/05-agent-workflow.md",
-  "AGENTS.md",
+  "CLAUDE.md",
+  ".dependency-cruiser.cjs",
+  "eslint.config.js",
+  "package.json",
+  "apps/worker/wrangler.jsonc",
 ]);
-const OWNER_PREFIXES = [".github/workflows/", "tools/repo-guard/"];
+const OWNER_PATTERNS = [/(^|\/)AGENTS\.md$/];
+const OWNER_PREFIXES = [
+  ".github/workflows/",
+  ".cursor/rules/",
+  "tools/repo-guard/",
+  "tools/constraint-check/",
+  "tools/eslint-plugin-open-split/",
+  "tools/web-quality/",
+];
 // 這兩個目錄允許新增檔案，改或刪既有檔案才要擁有者同意。
 const APPEND_ONLY_PREFIXES = ["docs/adr/", "apps/worker/migrations/"];
 
@@ -56,6 +68,7 @@ export function evaluate({ pr, files, comments }) {
       return paths.some(
         (p) =>
           OWNER_FILES.has(p) ||
+          OWNER_PATTERNS.some((re) => re.test(p)) ||
           OWNER_PREFIXES.some((prefix) => p.startsWith(prefix)) ||
           (APPEND_ONLY_PREFIXES.some((prefix) => p.startsWith(prefix)) && f.status !== "added"),
       );
@@ -76,10 +89,15 @@ export function evaluate({ pr, files, comments }) {
     (c) => c.user?.login === CODEX_LOGIN && parseCodexState(c.body),
   );
   const latest = codexComments.at(-1);
-  const review = latest ? parseCodexState(latest.body)?.code_review : null;
+  const parsedState = latest ? parseCodexState(latest.body) : null;
+  const review = parsedState?.code_review ?? null;
+  const securityReview = parsedState?.security_review ?? null;
   if (!review || review.commit_sha !== pr.headSha || review.status !== "completed") {
     waits.push(`等 Codex 審查 ${pr.headSha.slice(0, 7)}（可用 --request-review 請它審）`);
-  } else if (review.has_unresolved_findings) {
+  } else if (
+    review.has_unresolved_findings ||
+    (securityReview?.commit_sha === pr.headSha && securityReview.has_unresolved_findings)
+  ) {
     blockers.push("Codex 還有未處理的意見：修掉或回覆後把對話標成 resolved");
   }
 

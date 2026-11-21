@@ -35,12 +35,48 @@ describe("merge-gate", () => {
     expect(evaluate({ ...base, comments: [open, clean] }).state).toBe("success");
   });
 
-  it("needs the owner label for intent, rules, and the gate itself", () => {
-    for (const name of ["docs/00-intent.md", "AGENTS.md", "tools/repo-guard/merge-gate.mjs"]) {
-      expect(evaluate({ ...base, files: [file(name)] }).state).toBe("failure");
+  it("needs the owner label for intent, rules, guardrails, and deploy config", () => {
+    const protectedPaths = [
+      "docs/00-intent.md",
+      "AGENTS.md",
+      "apps/worker/AGENTS.md",
+      "CLAUDE.md",
+      ".cursor/rules/web-frontend.mdc",
+      ".dependency-cruiser.cjs",
+      "eslint.config.js",
+      "package.json",
+      "apps/worker/wrangler.jsonc",
+      ".github/workflows/ci.yml",
+      "tools/repo-guard/merge-gate.mjs",
+      "tools/constraint-check/test/harness.test.ts",
+      "tools/eslint-plugin-open-split/index.js",
+      "tools/web-quality/budget.mjs",
+    ];
+    for (const name of protectedPaths) {
+      expect(evaluate({ ...base, files: [file(name)] }).state, name).toBe("failure");
       const approved = { ...base, pr: { ...base.pr, labels: [{ name: "owner-approved" }] } };
-      expect(evaluate({ ...approved, files: [file(name)] }).state).toBe("success");
+      expect(evaluate({ ...approved, files: [file(name)] }).state, name).toBe("success");
     }
+    expect(evaluate({ ...base, files: [file("apps/web/package.json")] }).state).toBe("success");
+  });
+
+  it("blocks unresolved security_review findings on the current head only", () => {
+    const withSecurityIssue = {
+      user: { login: CODEX_LOGIN },
+      body: `<!-- codex-review-state:v1 ${JSON.stringify({
+        code_review: { commit_sha: sha, status: "completed", has_unresolved_findings: false },
+        security_review: { commit_sha: sha, status: "completed", has_unresolved_findings: true },
+      })} -->`,
+    };
+    const staleSecurityIssue = {
+      user: { login: CODEX_LOGIN },
+      body: `<!-- codex-review-state:v1 ${JSON.stringify({
+        code_review: { commit_sha: sha, status: "completed", has_unresolved_findings: false },
+        security_review: { commit_sha: "b".repeat(40), status: "completed", has_unresolved_findings: true },
+      })} -->`,
+    };
+    expect(evaluate({ ...base, comments: [withSecurityIssue] }).state).toBe("failure");
+    expect(evaluate({ ...base, comments: [staleSecurityIssue] }).state).toBe("success");
   });
 
   it("allows new ADRs and migrations but not edits to existing ones", () => {
