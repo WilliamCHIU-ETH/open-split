@@ -1,0 +1,39 @@
+name: merge-gate
+
+# 一律執行預設分支上的閘門程式，不執行 PR 裡的程式，所以 PR 改不了自己的閘門。
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review:
+    types: [submitted, dismissed]
+  pull_request_review_thread:
+    types: [resolved, unresolved]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  statuses: write
+
+concurrency:
+  group: merge-gate-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: tools/repo-guard
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node tools/repo-guard/merge-gate.mjs "$PR_NUMBER" --report-status
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

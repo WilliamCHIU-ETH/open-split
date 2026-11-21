@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+env:
+  DISABLE_TELEMETRY: "1"
+  WRANGLER_SEND_METRICS: "false"
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -17,5 +21,32 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+
+  # 在乾淨的本機 D1 上跑完整驗收，取代手動貼 driver 輸出。
+  accept:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: cp apps/worker/.dev.vars.example apps/worker/.dev.vars
+      - run: pnpm --filter @open-split/worker exec wrangler d1 migrations apply open-split --local
+      - name: Start local Worker
+        run: |
+          nohup pnpm --filter @open-split/worker exec wrangler dev --port 8787 --ip 127.0.0.1 > "$RUNNER_TEMP/wrangler.log" 2>&1 &
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/ || true)
+            if [ "$code" != "000" ]; then echo "worker up ($code)"; exit 0; fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/wrangler.log"
+          exit 1
+      - run: pnpm driver accept
         env:
-          DISABLE_TELEMETRY: "1"
+          OPEN_SPLIT_API_URL: http://127.0.0.1:8787
+      - if: failure()
+        run: cat "$RUNNER_TEMP/wrangler.log" || true

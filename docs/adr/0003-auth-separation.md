@@ -1,6 +1,6 @@
 # ADR-0003：登入與 MCP 分開
 
-- 狀態：已接受；MCP 開關條件由 [ADR-0009](0009-mcp-identity-via-line.md) 修訂（改看 LINE 身份的 `mcp_allowed`，不再用 Google 白名單）。
+- 狀態：已接受；MCP 開關條件由 [ADR-0009](0009-mcp-identity-via-line.md) 修訂（改看 LINE 身份的 `mcp_allowed`，不再用 Google 白名單）；「Google 是次要登入」延後到上線後再決定。
 - 日期：2026-11-20
 
 ## 背景

@@ -3,7 +3,7 @@
 - 狀態：已接受（實作在切片 6）
 - 日期：2026-11-21
 - 取代：[ADR-0007](0007-mcp-oauth-google-whitelist.md) 第 2 點「上游身份驗證與白名單」。ADR-0007 的其他部分（OAuth Provider、scope、token 隔離、冪等與稽核）仍然有效。
-- 修訂：[ADR-0003](0003-auth-separation.md) 的 MCP 開關條件。
+- 修訂：[ADR-0003](0003-auth-separation.md) 的 MCP 開關條件；ADR-0003 與 [ADR-0005](0005-line-liff.md) 的「Google 是次要登入」改為延後到上線後再決定（擁有者 2026-11-21 合併 PR #6 時接受「Google 不在上線範圍內」）。
 
 ## 背景
 

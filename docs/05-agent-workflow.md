@@ -13,32 +13,48 @@ open-split 由 Agent 寫、Agent 審、Agent 合併。擁有者只管意圖、�
 | 實作者 | 一片一個分支，寫程式、測試、文件，開 PR | Cursor、Codex、OpenBot 上的 Agent |
 | 自動審查 | 每次 push 後審 diff，標 P0–P3 | GitHub 上的 Codex connector（`chatgpt-codex-connector[bot]`） |
 | ADR 守門員 | 對照 `docs/00`–`05` 與 ADR，找出違反決策的地方 | 審查 Agent |
-| 驗收跑者 | 在乾淨的本機 D1 上跑 `pnpm driver accept`，把輸出與 SHA 貼進 PR | 審查 Agent；之後改由 CI |
-| 合併者 | 確認合併條件全部成立後合併 | 實作者以外的 Agent |
+| 驗收 | 在乾淨的本機 D1 上跑 `pnpm driver accept` | CI 的 `accept` job |
+| 合併 | 三個必要狀態都成功時合併 | GitHub auto-merge |
 
-同一個 Agent 不能既寫又合併同一份 PR。
+沒有 Agent 親手按合併；實作者只負責打開 auto-merge。
 
 ## 一份 PR 的流程
 
 1. 從最新的 `main` 開分支，命名為 `<agent>/slice-<n>-<短描述>`。
-2. 一份 PR 最多一片。非測試、非 lockfile 的變更超過約 1,000 行，就拆成幾份依序合併的 PR。
-3. 本機跑 `pnpm check` 與 `pnpm driver accept`，把 driver 輸出貼進 PR。
-4. 等 Codex 審查。對每一則 P0／P1 不是修掉，就是回覆為什麼不成立。
-5. 改了登入、權限、MCP 工具、遷移或金額計算的 PR，要有 ADR 守門員的審查留言。
-6. 合併者確認下面的條件，用 squash 合併，刪掉分支。
+2. 一份 PR 最多一片。非測試、非文件、非 lockfile 的變更超過 1,000 行，就拆成幾份依序合併的 PR。
+3. 本機跑 `pnpm check`；要確認功能時再跑 `pnpm driver accept`。CI 會在乾淨的本機 D1 上再跑一次 `accept`。
+4. 開 PR 之後馬上 `gh pr merge <n> --auto --squash --delete-branch`。之後不用再管合併，條件成立時 GitHub 會自己合。
+5. 等 Codex 審查。每一則意見不是修掉，就是回覆為什麼不成立，然後把那則對話標成 resolved。推了新 commit 之後，用 `pnpm merge-gate <n> --request-review` 請 Codex 審新的 head。
+6. 改了登入、權限、MCP 工具、遷移或金額計算的 PR，要有 ADR 守門員的審查留言。
+7. 沒修的 P2／P3 開成 GitHub issue（標籤 `deferred-review`），並在 PR 裡連過去。
+
+`pnpm merge-gate <n>` 隨時可以在本機看目前卡在哪裡。
 
 ## 合併條件
 
-全部都要指向 PR 的同一個 head SHA：
+`main` 的分支保護要求三個狀態都成功，auto-merge 才會合併：
 
-- [ ] CI `check` 通過。
-- [ ] 驗收跑者貼出這個 SHA 的 `pnpm driver accept` 輸出，結果通過。
-- [ ] Codex 審查涵蓋這個 SHA，沒有未處理的 P0／P1。
-- [ ] 觸及上一節第 5 步範圍的 PR，有 ADR 守門員的審查，沒有未處理的違規。
-- [ ] P2／P3 沒修的，每一項都開成 GitHub issue（標籤 `deferred-review`），並在 PR 裡連過去。不要只留在 PR 留言裡。
-- [ ] diff 裡沒有真實 Email、LINE user id、token 或其他個資（repo 是公開的）。
+| 狀態 | 檢查什麼 | 由誰產生 |
+| --- | --- | --- |
+| `check` | 型別、lint、依賴邊界、legacy-scan、個資掃描、JS 預算、測試 | `.github/workflows/ci.yml` |
+| `accept` | 乾淨本機 D1 上的 `pnpm driver accept` | `.github/workflows/ci.yml` |
+| `merge-gate` | Codex 審過目前的 head 且沒有未處理意見；PR 不是草稿、沒有 `hold`；大小在上限內；改到要擁有者同意的檔案時有 `owner-approved` | `.github/workflows/merge-gate.yml` 執行 `tools/repo-guard/merge-gate.mjs` |
 
-任何一項不成立就不合併。修完之後重跑對應的檢查，舊 SHA 的結果不算數。
+推了新 commit，三個狀態都會對新的 SHA 重來；舊 SHA 的結果不算數。
+
+機器還檢查不到、要靠 Agent 自律的兩件事：ADR 守門員的審查，以及延後項目有沒有開 issue。
+
+### 需要擁有者同意的檔案
+
+`merge-gate` 遇到下面的檔案會擋下，直到 PR 有 `owner-approved` 標籤：
+
+- `docs/00-intent.md`、`docs/01-product-review.md`、`docs/05-agent-workflow.md`、`AGENTS.md`
+- 修改或刪除既有的 ADR 與遷移（新增檔案不用）
+- 閘門本身：`.github/workflows/`、`tools/repo-guard/`
+
+`owner-approved` 只能由擁有者加。Agent 用的是擁有者的 GitHub 帳號，機器分辨不出是誰加的，所以這條靠 Agent 遵守：**Agent 不可以自己加 `owner-approved`，也不可以拿掉 `hold`。** 要同意時，在對話裡請擁有者加。
+
+想先停住某份 PR，加上 `hold` 標籤即可。
 
 ## 一定要先問擁有者
 
@@ -50,12 +66,15 @@ open-split 由 Agent 寫、Agent 審、Agent 合併。擁有者只管意圖、�
 
 其他都不用問，照這份流程做完。
 
+## 退回
+
+- 停掉全部自動合併：在 GitHub 的 repo 設定關掉 auto-merge，或對 PR 加 `hold`。
+- 拿掉分支保護：`gh api -X DELETE repos/<owner>/open-split/branches/main/protection`。
+- 已經合併的錯誤 PR：開一份 revert PR，走同一套流程。
+
 ## 還沒自動化的部分
 
-下面這些目前靠 Agent 照規則手動做，之後逐一改成機器強制：
-
-1. `main` 的分支保護：必須通過 `check` 才能合併。
-2. CI 加一個 job：起 `wrangler dev` 與乾淨的本機 D1，跑 `pnpm driver accept`。之後驗收跑者就不用再手動貼輸出。
-3. CI 掃描密鑰與個資。
-4. 一支合併檢查腳本：讀 Codex 審查留言裡的 `codex-review-state`，確認 SHA 一致、沒有未處理的 P0／P1。
-5. 打開 repo 的 auto-merge，讓合併者只負責按下去。
+- ADR 守門員審查還是由 Agent 手動留言，沒有變成狀態。
+- 延後項目有沒有開 issue，機器不檢查。
+- 機器分辨不出 `owner-approved` 是擁有者還是 Agent 加的。
+- 部署正式環境還沒有流程；上線前每次都要先問擁有者。

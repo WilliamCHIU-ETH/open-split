@@ -10,16 +10,14 @@
 
 ## 跑過的證據
 
-貼上 `pnpm driver ...` 的輸出。沒有跑過 driver 的功能 PR 不算完成。
+CI 的 `accept` 會跑完整的 `pnpm driver accept`。這一片新增的驗收步驟寫在這裡，必要時貼本機輸出。
 
 ```
 ```
 
-## 合併條件（見 docs/05-agent-workflow.md）
+## 合併
 
-- [ ] 一份 PR 最多一片；非測試變更約 1,000 行以內
-- [ ] Codex 審查涵蓋 head SHA，沒有未處理的 P0／P1
-- [ ] 改到登入、權限、MCP、遷移或金額：有 ADR 守門員審查
-- [ ] 沒修的 P2／P3 已開 `deferred-review` issue：
-- [ ] 沒有真實 Email、LINE user id、token 或個資
-- [ ] 需要擁有者先同意的事（改意圖、推翻 ADR、正式部署、改正式資料、對真實群組發訊息）：無／已取得
+開好之後執行 `gh pr merge <n> --auto --squash --delete-branch`。`check`、`accept`、`merge-gate` 都成功就會自己合併，見 `docs/05-agent-workflow.md`。
+
+- 沒修的 P2／P3 開的 `deferred-review` issue：
+- 改到登入、權限、MCP、遷移或金額時，ADR 守門員審查：

@@ -70,5 +70,5 @@ MCP 的上游登入改成同一個 LINE Login，`OWNER_LINE_USER_IDS` 與 `users
 
 - 對應 `docs/feature-map.md` 的項目。
 - `pnpm check` 通過。
-- PR 裡貼上 driver 證據。
-- 照 [05 Agent 工作流程](05-agent-workflow.md) 的合併條件，由實作者以外的 Agent 合併。
+- CI 的 `accept`（driver 驗收）通過；新的切片要把自己的驗收步驟加進 `pnpm driver accept`。
+- 照 [05 Agent 工作流程](05-agent-workflow.md) 由 auto-merge 合併。
