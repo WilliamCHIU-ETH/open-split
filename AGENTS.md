@@ -31,13 +31,14 @@
 ## 公開 repo 規則
 
 - 不要提交真實 Email、LINE user id、群組名稱、token 或任何個資。範例與測試用 `[redacted-email]`、`dev-line:alice` 這類假值，真實值從環境變數注入。
-- commit 前跑 `git grep -nE '@gmail\.com|U[0-9a-f]{32}'`，結果必須是 0。
+- `pnpm check` 裡的 `pii-scan` 會擋真實 Email、LINE user id 與常見權杖格式。
 
 ## 完成與合併
 
 - 一份 PR 最多一片；非測試變更超過約 1,000 行就拆。
-- 完成前跑 `pnpm check` 與 `pnpm driver accept`，把 driver 輸出貼進 PR。
-- 合併全自動，但要照 [docs/05-agent-workflow.md](docs/05-agent-workflow.md) 的合併條件，由實作者以外的 Agent 合併。
+- 完成前跑 `pnpm check`。CI 會再跑 `check`、`accept`（driver 驗收）與 `merge-gate`。
+- 開 PR 後直接打開 auto-merge（`gh pr merge <n> --auto --squash --delete-branch`）；三個狀態都成功時 GitHub 會自己合。卡在哪裡用 `pnpm merge-gate <n>` 看。流程見 [docs/05-agent-workflow.md](docs/05-agent-workflow.md)。
+- 不要自己加 `owner-approved` 標籤，也不要拿掉 `hold`。
 - 沒修的審查意見開成 `deferred-review` issue，不要只留在 PR 留言。
 
 ## 一定要先問擁有者
