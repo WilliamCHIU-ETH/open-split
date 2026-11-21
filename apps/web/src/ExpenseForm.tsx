@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { ATTACHMENT_MAX_PER_EXPENSE, type AttachmentSummary, type FxRateWire, type GroupDetail, type SplitWire } from "@open-split/contracts";
+import type { AttachmentSummary, FxRateWire, GroupDetail, SplitWire } from "@open-split/contracts";
+import { ATTACHMENT_MAX_PER_EXPENSE } from "@open-split/contracts/client";
 import { SUPPORTED_CURRENCIES, currencyExponent, formatMinor, toMinorUnits } from "@open-split/core";
 import { api, type ExpenseDraft } from "./api.ts";
 import { Dialog } from "./Dialog.tsx";

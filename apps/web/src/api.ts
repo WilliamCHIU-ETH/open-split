@@ -1,28 +1,30 @@
-import {
-  ATTACHMENT_MAX_BYTES,
-  attachmentMimeTypes,
-  type ActivityResult,
-  type AddMemberResult,
-  type AttachmentSummary,
-  type AttachmentUploadIntentInput,
-  type AttachmentUploadIntentResult,
-  type BalancesResult,
-  type ClaimGrant,
-  type ClaimPreview,
-  type ClaimResult,
-  type CurrentSession,
-  type DevUser,
-  type FxRateWire,
-  type Group,
-  type GroupDetail,
-  type GroupSummary,
-  type InvitePreview,
-  type JoinResult,
-  type PaymentProfileWrite,
-  type SettlementPreview,
-  type SettlementWrite,
-  type SplitWire,
+import type {
+  ActivityResult,
+  AddMemberResult,
+  AttachmentSummary,
+  AttachmentUploadIntentInput,
+  AttachmentUploadIntentResult,
+  BalancesResult,
+  ClaimGrant,
+  ClaimPreview,
+  ClaimResult,
+  CreateGroupResult,
+  CurrentSession,
+  DevUser,
+  ExpenseInput,
+  ExpenseResult,
+  GroupDetail,
+  GroupList,
+  GroupSummary,
+  InvitePreview,
+  InviteResult,
+  JoinResult,
+  PaymentProfileWrite,
+  SettlementPreview,
+  SettlementWrite,
+  VoidExpenseResult,
 } from "@open-split/contracts";
+import { ATTACHMENT_MAX_BYTES, apiPaths, attachmentMimeTypes } from "@open-split/contracts/client";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -34,18 +36,7 @@ export class ApiError extends Error {
   }
 }
 
-export interface ExpenseDraft {
-  readonly groupId: string;
-  readonly payerId: string;
-  readonly amount: string;
-  readonly currency: string;
-  readonly fxRate?: FxRateWire;
-  readonly participantIds: readonly string[];
-  readonly split: SplitWire;
-  readonly category?: string;
-  readonly note?: string;
-  readonly attachmentIds?: readonly string[];
-}
+export type ExpenseDraft = ExpenseInput;
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
@@ -89,46 +80,39 @@ async function sha256HexBuffer(buffer: ArrayBuffer): Promise<string> {
 }
 
 export const api = {
-  devEnabled: () => request<{ enabled: true }>("/api/dev/session"),
+  devEnabled: () => request<{ enabled: true }>(apiPaths.devSession()),
   signIn: (name: string, provider: "line" | "google") =>
-    request<CurrentSession & { token: string }>("/api/dev/session", { method: "POST", body: { name, provider } }),
-  session: () => request<CurrentSession>("/api/session"),
-  signOut: () => request<{ ok: true }>("/api/session", { method: "DELETE" }),
-  devUsers: () => request<{ users: DevUser[] }>("/api/dev/users"),
-  groups: () => request<{ groups: Group[] }>("/api/groups"),
+    request<CurrentSession & { token: string }>(apiPaths.devSession(), { method: "POST", body: { name, provider } }),
+  session: () => request<CurrentSession>(apiPaths.session()),
+  signOut: () => request<{ ok: true }>(apiPaths.session(), { method: "DELETE" }),
+  devUsers: () => request<{ users: DevUser[] }>(apiPaths.devUsers()),
+  groups: () => request<GroupList>(apiPaths.groups()),
   createGroup: (name: string, defaultCurrency: string) =>
-    request<Group & { ownerMemberId: string }>("/api/groups", { method: "POST", body: { name, defaultCurrency } }),
-  group: (groupId: string) => request<GroupDetail>(`/api/groups/${groupId}`),
+    request<CreateGroupResult>(apiPaths.groups(), { method: "POST", body: { name, defaultCurrency } }),
+  group: (groupId: string) => request<GroupDetail>(apiPaths.group(groupId)),
   addMember: (groupId: string, body: { displayName: string; virtual: boolean; userId?: string }) =>
-    request<AddMemberResult>(`/api/groups/${groupId}/members`, { method: "POST", body }),
+    request<AddMemberResult>(apiPaths.groupMembers(groupId), { method: "POST", body }),
   rotateClaim: (groupId: string, memberId: string) =>
-    request<ClaimGrant>(`/api/groups/${groupId}/members/${memberId}/claim-link`, { method: "POST" }),
-  previewClaim: (token: string) => request<ClaimPreview>(`/api/claims/${encodeURIComponent(token)}`),
-  claim: (token: string) => request<ClaimResult>(`/api/claims/${encodeURIComponent(token)}`, { method: "POST" }),
-  createInvite: (groupId: string) =>
-    request<{ invitePath: string; token: string }>(`/api/groups/${groupId}/invites`, { method: "POST" }),
-  previewInvite: (token: string) => request<InvitePreview>(`/api/invites/${encodeURIComponent(token)}`),
-  acceptInvite: (token: string) => request<JoinResult>(`/api/invites/${encodeURIComponent(token)}/accept`, { method: "POST" }),
+    request<ClaimGrant>(apiPaths.memberClaimLink(groupId, memberId), { method: "POST" }),
+  previewClaim: (token: string) => request<ClaimPreview>(apiPaths.claim(token)),
+  claim: (token: string) => request<ClaimResult>(apiPaths.claim(token), { method: "POST" }),
+  createInvite: (groupId: string) => request<InviteResult>(apiPaths.groupInvites(groupId), { method: "POST" }),
+  previewInvite: (token: string) => request<InvitePreview>(apiPaths.invite(token)),
+  acceptInvite: (token: string) => request<JoinResult>(apiPaths.inviteAccept(token), { method: "POST" }),
   addExpense: (draft: ExpenseDraft) =>
-    request<{ id: string; shares: { participantId: string; amount: string }[] }>(`/api/groups/${draft.groupId}/expenses`, {
-      method: "POST",
-      body: draft,
-    }),
+    request<ExpenseResult>(apiPaths.groupExpenses(draft.groupId), { method: "POST", body: draft }),
   updateExpense: (expenseId: string, draft: ExpenseDraft) =>
-    request<{ id: string; shares: { participantId: string; amount: string }[] }>(
-      `/api/groups/${draft.groupId}/expenses/${expenseId}`,
-      { method: "PATCH", body: draft },
-    ),
+    request<ExpenseResult>(apiPaths.groupExpense(draft.groupId, expenseId), { method: "PATCH", body: draft }),
   voidExpense: (groupId: string, expenseId: string) =>
-    request<{ id: string; voided: true }>(`/api/groups/${groupId}/expenses/${expenseId}/void`, { method: "POST" }),
-  attachments: (groupId: string) => request<{ attachments: AttachmentSummary[] }>(`/api/groups/${groupId}/attachments`),
+    request<VoidExpenseResult>(apiPaths.groupExpenseVoid(groupId, expenseId), { method: "POST" }),
+  attachments: (groupId: string) => request<{ attachments: AttachmentSummary[] }>(apiPaths.groupAttachments(groupId)),
   createAttachmentUpload: (groupId: string, body: Omit<AttachmentUploadIntentInput, "groupId">) =>
-    request<AttachmentUploadIntentResult>(`/api/groups/${groupId}/attachments/upload-intent`, {
+    request<AttachmentUploadIntentResult>(apiPaths.groupAttachmentUploadIntent(groupId), {
       method: "POST",
       body: { ...body, groupId },
     }),
   deleteAttachment: (groupId: string, attachmentId: string) =>
-    request<{ id: string; deleted: true }>(`/api/groups/${groupId}/attachments/${attachmentId}`, { method: "DELETE" }),
+    request<{ id: string; deleted: true }>(apiPaths.groupAttachment(groupId, attachmentId), { method: "DELETE" }),
   uploadReceiptFile: async (groupId: string, file: File, expenseId?: string): Promise<AttachmentSummary> => {
     const mimeType = (attachmentMimeTypes as readonly string[]).includes(file.type)
       ? (file.type as AttachmentUploadIntentInput["mimeType"])
@@ -161,18 +145,18 @@ export const api = {
     }
     return parseJsonResponse<AttachmentSummary>(response);
   },
-  balances: (groupId: string) => request<BalancesResult>(`/api/groups/${groupId}/balances`),
-  settlementPlan: (groupId: string) => request<SettlementPreview>(`/api/groups/${groupId}/settlement-plan`),
+  balances: (groupId: string) => request<BalancesResult>(apiPaths.groupBalances(groupId)),
+  settlementPlan: (groupId: string) => request<SettlementPreview>(apiPaths.groupSettlementPlan(groupId)),
   recordSettlement: (groupId: string, body: SettlementWrite) =>
-    request<{ id: string }>(`/api/groups/${groupId}/settlements`, { method: "POST", body }),
+    request<{ id: string }>(apiPaths.groupSettlements(groupId), { method: "POST", body }),
   voidSettlement: (groupId: string, settlementId: string) =>
-    request<{ id: string; voided: true }>(`/api/groups/${groupId}/settlements/${settlementId}/void`, { method: "POST" }),
+    request<{ id: string; voided: true }>(apiPaths.groupSettlementVoid(groupId, settlementId), { method: "POST" }),
   savePaymentProfile: (groupId: string, memberId: string, body: PaymentProfileWrite) =>
-    request<{ id: string }>(`/api/groups/${groupId}/members/${memberId}/payment-profile`, { method: "PUT", body }),
+    request<{ id: string }>(apiPaths.memberPaymentProfile(groupId, memberId), { method: "PUT", body }),
   clearPaymentProfile: (groupId: string, memberId: string) =>
-    request<{ ok: true }>(`/api/groups/${groupId}/members/${memberId}/payment-profile`, { method: "DELETE" }),
-  summary: (groupId: string) => request<GroupSummary>(`/api/groups/${groupId}/summary`),
-  activity: (groupId: string) => request<ActivityResult>(`/api/groups/${groupId}/activity`),
+    request<{ ok: true }>(apiPaths.memberPaymentProfile(groupId, memberId), { method: "DELETE" }),
+  summary: (groupId: string) => request<GroupSummary>(apiPaths.groupSummary(groupId)),
+  activity: (groupId: string) => request<ActivityResult>(apiPaths.groupActivity(groupId)),
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

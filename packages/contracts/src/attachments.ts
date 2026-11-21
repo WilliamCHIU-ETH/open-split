@@ -1,10 +1,18 @@
 import { z } from "zod";
+import {
+  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MAX_PER_EXPENSE,
+  GROUP_ATTACHMENT_QUOTA_BYTES,
+  attachmentMimeTypes,
+} from "./attachment-limits.ts";
 import { idSchema } from "./money.ts";
 
-export const attachmentMimeTypes = ["image/jpeg", "image/png", "image/webp", "application/pdf"] as const;
-export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
-export const ATTACHMENT_MAX_PER_EXPENSE = 5;
-export const GROUP_ATTACHMENT_QUOTA_BYTES = 100 * 1024 * 1024;
+export {
+  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MAX_PER_EXPENSE,
+  GROUP_ATTACHMENT_QUOTA_BYTES,
+  attachmentMimeTypes,
+};
 
 export const attachmentMimeTypeSchema = z.enum(attachmentMimeTypes);
 

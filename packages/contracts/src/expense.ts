@@ -58,4 +58,5 @@ export const expenseResultSchema = z.strictObject({
 
 export type FxRateWire = z.infer<typeof fxRateSchema>;
 export type ExpenseInput = z.infer<typeof expenseInputSchema>;
+export type ExpenseResult = z.infer<typeof expenseResultSchema>;
 export type SplitWire = z.infer<typeof splitSchema>;

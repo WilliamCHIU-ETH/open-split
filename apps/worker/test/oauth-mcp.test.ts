@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { DatabaseSync } from "node:sqlite";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, expect, it, vi } from "vitest";
-import { createWorkerHandler } from "../src/mcp/oauth.ts";
+import { createWorkerHandler } from "../src/entry/worker.ts";
 import { applyMigrations, createMemoryKv, createMemoryR2, createTestEnv } from "./helpers.ts";
 
 const BASE = "https://split.example.com";
