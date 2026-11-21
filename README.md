@@ -14,7 +14,7 @@
 | `apps/worker` | Hono + Drizzle (D1) + R2 收據 + MCP OAuth 2.1 Gateway (KV) |
 | `apps/web` | 手機優先的帳本網頁 |
 | `tools/driver` | 驗收用 CLI（含切片 1–5 完整 `accept`） |
-| `docs/` | 意圖、產品、架構、契約、切片、Agent 工作流程、ADR `0001`–`0009` |
+| `docs/` | 意圖、產品、架構、契約、切片、Agent 工作流程、ADR `0001`–`0010` |
 
 ## 常用指令
 
@@ -27,16 +27,15 @@ pnpm driver accept
 
 `pnpm check` 會做型別檢查、lint（含無障礙與金額規則）、依賴邊界、`legacy-scan`、前端 JS gzip 預算，以及測試。
 
-本機帳本（首次執行請先套用本機 D1 遷移）：
+本機帳本（`worker dev` 會先建置 `apps/web/dist` 並套用本機 D1 遷移，單獨啟動即可在 `http://127.0.0.1:8787` 同網域開啟網頁與 API）：
 
 ```sh
 cp apps/worker/.dev.vars.example apps/worker/.dev.vars
-pnpm --filter @open-split/worker exec wrangler d1 migrations apply open-split --local
 pnpm --filter @open-split/worker dev
 pnpm --filter @open-split/web dev
 ```
 
-網頁在 `http://127.0.0.1:5173`，API 與 MCP/OAuth 端點由 Vite 轉到 Worker。`pnpm driver accept` 直接打 Worker。
+需要前端 HMR 時再開第二個終端執行 `pnpm --filter @open-split/web dev`（`http://127.0.0.1:5173`，API 與 Auth／MCP／OAuth 端點由 Vite 轉到 Worker）。`pnpm driver accept` 直接打 Worker。
 
 `.dev.vars` 不會上傳。假登入旗標 `AUTH_DEV_IDENTITIES=true`、本機 `MCP_ALLOWED_EMAILS`、測試 `COOKIE_ENCRYPTION_KEY` 與 OAuth secrets 只能放在那裡；`wrangler.jsonc` 裡必須維持關閉，檢查會擋下打開假身份的部署設定。
 

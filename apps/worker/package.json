@@ -8,7 +8,7 @@
     "test": "vitest run",
     "types": "wrangler types",
     "db:migrate": "wrangler d1 migrations apply open-split --local --force",
-    "dev": "wrangler d1 migrations apply open-split --local --force && wrangler dev"
+    "dev": "pnpm --filter @open-split/web build && wrangler d1 migrations apply open-split --local --force && wrangler dev"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.2.4",
