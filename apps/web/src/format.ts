@@ -1,8 +1,34 @@
-export function formatMoney(minor: string, currency: string): string {
-  const negative = minor.startsWith("-");
-  const digits = negative ? minor.slice(1) : minor;
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `${negative ? "−" : ""}${grouped} ${currency}`;
+import { formatMinorByCurrency, formatMinorDecimal, minor } from "@open-split/core";
+
+export function formatMoney(minorText: string, currency: string): string {
+  try {
+    return formatMinorByCurrency(minor(BigInt(minorText)), currency);
+  } catch {
+    const negative = minorText.startsWith("-");
+    const digits = negative ? minorText.slice(1) : minorText;
+    const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return `${negative ? "−" : ""}${grouped} ${currency}`;
+  }
+}
+
+export function formatDecimalInput(minorText: string, currency: string): string {
+  try {
+    return formatMinorDecimal(minor(BigInt(minorText)), currency);
+  } catch {
+    return minorText;
+  }
+}
+
+export function formatRateDisplay(rate: { numerator: number; denominator: number } | null): string {
+  if (!rate) return "";
+  if (rate.denominator === 1) return String(rate.numerator);
+  return `${String(rate.numerator)}/${String(rate.denominator)}`;
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${String(Math.round(bytes / 1024))} KB`;
+  return `${String(bytes)} B`;
 }
 
 export function netTone(net: string): "owed" | "owes" | "even" {

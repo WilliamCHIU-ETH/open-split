@@ -11,9 +11,13 @@ LINE_LOGIN_CHANNEL_ID=
 LINE_LOGIN_CHANNEL_SECRET=
 LINE_LIFF_ID=
 
-# Secondary login. Not used by the dev identity provider.
-# GOOGLE_CLIENT_ID=
-# GOOGLE_CLIENT_SECRET=
+# MCP OAuth 2.1 (Cloudflare Workers OAuth Provider + Google OAuth + Gmail whitelist, ADR-0007).
+# Local wrangler dev runs with AUTH_DEV_IDENTITIES=true so dev OAuth consent works without real secrets.
+COOKIE_ENCRYPTION_KEY=dev-only-cookie-key-replace-in-prod-32chars
+MCP_ALLOWED_EMAILS=owner@example.test
+PUBLIC_BASE_URL=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
 
 # Optional Official Account silent push. Not a chat bot. Later slice.
 # LINE_MESSAGING_CHANNEL_ACCESS_TOKEN=

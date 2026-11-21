@@ -25,15 +25,22 @@ export const splitSchema = z.discriminatedUnion("type", [
   sharesSplitSchema,
 ]);
 
+export const fxRateSchema = z.strictObject({
+  numerator: positiveIntSchema,
+  denominator: positiveIntSchema,
+});
+
 export const expenseInputSchema = z.strictObject({
   groupId: idSchema,
   payerId: idSchema,
   amount: unsignedMinorSchema,
   currency: currencyCodeSchema,
+  fxRate: fxRateSchema.optional(),
   participantIds: z.array(idSchema).min(1),
   split: splitSchema,
-  category: z.string().min(1).max(40).optional(),
+  category: z.string().trim().min(1).max(40).optional(),
   note: z.string().max(500).optional(),
+  attachmentIds: z.array(idSchema).max(5).optional(),
 });
 
 export const shareWireSchema = z.strictObject({
@@ -44,7 +51,11 @@ export const shareWireSchema = z.strictObject({
 export const expenseResultSchema = z.strictObject({
   id: idSchema,
   shares: z.array(shareWireSchema),
+  convertedAmount: unsignedMinorSchema,
+  convertedCurrency: currencyCodeSchema,
+  originalShares: z.array(shareWireSchema),
 });
 
+export type FxRateWire = z.infer<typeof fxRateSchema>;
 export type ExpenseInput = z.infer<typeof expenseInputSchema>;
 export type SplitWire = z.infer<typeof splitSchema>;

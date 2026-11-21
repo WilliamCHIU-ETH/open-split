@@ -48,6 +48,14 @@ beforeAll(async () => {
       "ENVIRONMENT:test",
       "--var",
       "AUTH_DEV_IDENTITIES:true",
+      "--var",
+      "MCP_ALLOWED_EMAILS:owner@example.test",
+      "--var",
+      "COOKIE_ENCRYPTION_KEY:test-cookie-encryption-key-at-least-32-chars",
+      "--var",
+      "GOOGLE_CLIENT_ID:",
+      "--var",
+      "GOOGLE_CLIENT_SECRET:",
       "--log-level",
       "info",
       "--show-interactive-dev-session",
@@ -86,7 +94,7 @@ afterEach(async () => {
 });
 
 describe("driver", () => {
-  it("runs slices 1 through 3 against the local worker", async () => {
+  it("runs slices 1 through 5 against the local worker", async () => {
     const dir = await mkdtemp(join(tmpdir(), "open-split-driver-"));
     directories.push(dir);
     const output = await capture(["accept", "--state", join(dir, "state.json")]);
@@ -104,6 +112,24 @@ describe("driver", () => {
       "invariant.preview_settled_to_zero",
       "invariant.summary_matches_balances",
       "invariant.categories_sum_to_total",
+      "check.fx_conversion",
+      "invariant.fx_balances_sum_to_zero",
+      "check.fx_same_currency_rate_rejected",
+      "check.fx_settlement_currency_rejected",
+      "check.fx_default_currency_settlement",
+      "check.activity.actor_attribution",
+      "check.mcp_oauth_metadata",
+      "check.mcp_dcr",
+      "check.mcp_whitelist_denied",
+      "check.mcp_oauth_token",
+      "check.mcp_token_web_isolated",
+      "check.r2_magic_bytes_rejected",
+      "check.r2_receipt_uploaded",
+      "check.mcp_idempotent_add_expense",
+      "check.r2_receipt_download_headers",
+      "check.r2_non_member_download_forbidden",
+      "check.r2_receipt_deleted",
+      "check.mcp_read_only_scope_enforced",
     ]) {
       expect(output.stdout).toContain(`${check}: pass`);
     }
@@ -111,6 +137,8 @@ describe("driver", () => {
     expect(output.stdout).toContain("check.other_payment_profile_forbidden.status: 403");
     expect(output.stdout).toContain("check.non_member_settlement_forbidden.status: 403");
     expect(output.stdout).toContain("check.settlement_currency_mismatch.status: 422");
+    expect(output.stdout).toContain("check.fx_same_currency_rate_rejected.status: 422");
+    expect(output.stdout).toContain("check.fx_settlement_currency_rejected.status: 422");
     expect(output.stdout).toContain("login.subject: dev-line:alice");
     expect(output.stdout).toContain("login.subject: dev-google:bob");
     expect(output.stdout).toContain("login.subject: dev-line:kenji");
@@ -120,6 +148,7 @@ describe("driver", () => {
     expect(output.stdout).toContain("expense_split: exact");
     expect(output.stdout).toContain("expense_split: percentage");
     expect(output.stdout).toContain("expense_split: shares");
+    expect(output.stdout).toContain("expense_converted_minor: 21021");
     expect(output.stdout).toContain("expense_participants: 2");
     expect(output.stdout).toContain("expense_updated:");
     expect(output.stdout).toContain("expense_voided:");

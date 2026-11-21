@@ -1,9 +1,10 @@
 import { useId, useRef, useState, type FormEvent } from "react";
 import type { GroupDetail, SettlementView } from "@open-split/contracts";
+import { currencyExponent, formatMinor, toMinorUnits } from "@open-split/core";
 import { api } from "./api.ts";
 import { Dialog } from "./Dialog.tsx";
-import { formatMoney } from "./format.ts";
-import { readMinor } from "./preview.ts";
+import { formatDecimalInput, formatMoney } from "./format.ts";
+import { decimalHintForCurrency, decimalPatternForCurrency, readMajorAsMinor } from "./preview.ts";
 
 export type SettleUpAction =
   | { kind: "record"; fromMemberId: string; toMemberId: string; amount: string }
@@ -70,18 +71,26 @@ export function SettleUpDialog({
 
     const fromMemberId = String(data.get("fromMemberId") ?? "");
     const toMemberId = String(data.get("toMemberId") ?? "");
-    const amount = String(data.get("amount") ?? "").trim();
+    const amountRaw = String(data.get("amount") ?? "").trim();
     const note = String(data.get("note") ?? "").trim();
     if (fromMemberId === toMemberId) {
       invalidField(form, "toMemberId", "付款人與收款人必須是不同的成員。");
       return;
     }
-    if (!readMinor(amount) || amount === "0") {
-      invalidField(form, "amount", "金額要是大於 0 的整數，不能有小數點或前導零。");
+    const parsedMinor = readMajorAsMinor(amountRaw, currency);
+    if (parsedMinor === null || toMinorUnits(parsedMinor) <= 0n) {
+      invalidField(form, "amount", `金額要大於 0。${decimalHintForCurrency(currency)}`);
       return;
     }
     void save(
-      () => api.recordSettlement(groupId, { fromMemberId, toMemberId, amount, currency, ...(note ? { note } : {}) }),
+      () =>
+        api.recordSettlement(groupId, {
+          fromMemberId,
+          toMemberId,
+          amount: formatMinor(parsedMinor),
+          currency,
+          ...(note ? { note } : {}),
+        }),
       "已記錄這筆結清。",
     );
   }
@@ -89,6 +98,8 @@ export function SettleUpDialog({
   const profile = action?.kind === "profile" ? action.member.paymentProfile : null;
   const title = action?.kind === "profile" ? `${action.member.displayName} 的收款方式`
     : action?.kind === "void" ? "作廢這筆結清？" : "記錄結清";
+  const initialAmount =
+    action?.kind === "record" && action.amount ? formatDecimalInput(action.amount, currency) : "";
 
   return (
     <Dialog open={action !== null} pending={pending} labelledBy={titleId} onClose={close}>
@@ -130,17 +141,25 @@ export function SettleUpDialog({
                   </select>
                 </div>
                 <div className="field">
-                  <label htmlFor={`${titleId}-amount`}>金額（{currency}，最小貨幣單位）</label>
+                  <label htmlFor={`${titleId}-amount`}>金額（{currency}）</label>
+                  <p id={`${titleId}-amount-help`} className="text-sm text-muted">
+                    {decimalHintForCurrency(currency)}
+                  </p>
                   <input
                     id={`${titleId}-amount`}
                     name="amount"
-                    defaultValue={action.amount}
-                    inputMode="numeric"
+                    defaultValue={initialAmount}
+                    inputMode={currencyExponent(currency) === 0 ? "numeric" : "decimal"}
+                    pattern={decimalPatternForCurrency(currency)}
+                    aria-describedby={`${titleId}-amount-help`}
                     autoComplete="off"
                     required
                     onInput={(event) => event.currentTarget.setCustomValidity("")}
                     onInvalid={(event) => {
-                      if (event.currentTarget.validity.valueMissing) event.currentTarget.setCustomValidity("請填金額。");
+                      const input = event.currentTarget;
+                      input.setCustomValidity(
+                        input.validity.valueMissing ? "請填金額。" : decimalHintForCurrency(currency),
+                      );
                     }}
                   />
                 </div>

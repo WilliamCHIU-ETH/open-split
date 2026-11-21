@@ -11,11 +11,13 @@
     "dev": "wrangler d1 migrations apply open-split --local --force && wrangler dev"
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.4",
     "@open-split/auth": "workspace:*",
     "@open-split/contracts": "workspace:*",
     "@open-split/core": "workspace:*",
     "drizzle-orm": "0.45.4",
-    "hono": "4.13.19"
+    "hono": "4.13.19",
+    "jose": "6.2.18"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261120.1",

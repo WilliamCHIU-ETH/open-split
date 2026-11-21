@@ -6,11 +6,17 @@ import { ApiError, api, type ExpenseDraft } from "./api.ts";
 import { CopyLink } from "./copy-link.tsx";
 import { Dialog } from "./Dialog.tsx";
 import { ExpenseForm, type ExpenseFormState } from "./ExpenseForm.tsx";
-import { formatMoney, formatWhen, memberStatus, netLabel, netTone, splitLabel } from "./format.ts";
+import { formatBytes, formatDecimalInput, formatMoney, formatRateDisplay, formatWhen, memberStatus, netLabel, netTone, splitLabel } from "./format.ts";
 import { LedgerSummary } from "./LedgerSummary.tsx";
 import { MemberDialog } from "./MemberDialog.tsx";
 import { SettlementSection, activitySummary } from "./SettlementSection.tsx";
 import { SettleUpDialog, type SettleUpAction } from "./SettleUpDialog.tsx";
+
+interface PanelErrors {
+  readonly plan?: string;
+  readonly summary?: string;
+  readonly activity?: string;
+}
 
 export function Ledger({
   groupId,
@@ -27,6 +33,7 @@ export function Ledger({
   const [activity, setActivity] = useState<ActivityResult | null>(null);
   const [plan, setPlan] = useState<SettlementPreview | null>(null);
   const [summary, setSummary] = useState<GroupSummary | null>(null);
+  const [panelErrors, setPanelErrors] = useState<PanelErrors>({});
   const [settleUpAction, setSettleUpAction] = useState<SettleUpAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -41,27 +48,51 @@ export function Ledger({
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    void Promise.all([
+    setPanelErrors({});
+    void Promise.allSettled([
       api.group(groupId),
       api.balances(groupId),
       api.activity(groupId),
       api.settlementPlan(groupId),
       api.summary(groupId),
-    ])
-      .then(([nextDetail, nextBalances, nextActivity, nextPlan, nextSummary]) => {
-        if (cancelled) return;
-        setDetail(nextDetail);
-        setBalances(nextBalances);
-        setActivity(nextActivity);
-        setPlan(nextPlan);
-        setSummary(nextSummary);
-        setLoadedRevision(revision);
-      })
-      .catch((caught: unknown) => {
-        if (cancelled) return;
-        if (caught instanceof ApiError && caught.status === 401) onUnauthorized();
-        else setError(caught instanceof Error ? caught.message : "讀不到這個群組。");
-      });
+    ]).then(([groupRes, balancesRes, activityRes, planRes, summaryRes]) => {
+      if (cancelled) return;
+      const results = [groupRes, balancesRes, activityRes, planRes, summaryRes];
+      for (const res of results) {
+        if (res.status === "rejected" && res.reason instanceof ApiError && res.reason.status === 401) {
+          onUnauthorized();
+          return;
+        }
+      }
+      if (groupRes.status === "rejected" || balancesRes.status === "rejected") {
+        const failed = groupRes.status === "rejected" ? groupRes.reason : (balancesRes as PromiseRejectedResult).reason;
+        setError(failed instanceof Error ? failed.message : "讀不到這個群組。");
+        return;
+      }
+      setDetail(groupRes.value);
+      setBalances(balancesRes.value);
+      const nextPanelErrors: { plan?: string; summary?: string; activity?: string } = {};
+      if (activityRes.status === "fulfilled") {
+        setActivity(activityRes.value);
+      } else {
+        setActivity(null);
+        nextPanelErrors.activity = activityRes.reason instanceof Error ? activityRes.reason.message : "讀不到活動紀錄。";
+      }
+      if (planRes.status === "fulfilled") {
+        setPlan(planRes.value);
+      } else {
+        setPlan(null);
+        nextPanelErrors.plan = planRes.reason instanceof Error ? planRes.reason.message : "讀不到結清建議。";
+      }
+      if (summaryRes.status === "fulfilled") {
+        setSummary(summaryRes.value);
+      } else {
+        setSummary(null);
+        nextPanelErrors.summary = summaryRes.reason instanceof Error ? summaryRes.reason.message : "讀不到統計。";
+      }
+      setPanelErrors(nextPanelErrors);
+      setLoadedRevision(revision);
+    });
     return () => {
       cancelled = true;
     };
@@ -103,23 +134,29 @@ export function Ledger({
     setExpenseForm({
       expenseId: null,
       amount: "",
+      currency: detail.group.defaultCurrency,
+      fxRateText: "",
       payerId: self?.id ?? detail.members[0]?.id ?? "",
       participantIds: detail.members.map((member) => member.id),
       category: "",
       note: "",
       split: { type: "equal" },
+      attachments: [],
     });
   }
 
   function openEdit(expense: ExpenseView) {
     setExpenseForm({
       expenseId: expense.id,
-      amount: expense.amount,
+      amount: formatDecimalInput(expense.amount, expense.currency),
+      currency: expense.currency,
+      fxRateText: formatRateDisplay(expense.fxRate),
       payerId: expense.payerId,
       participantIds: expense.participantIds,
       category: expense.category ?? "",
       note: expense.note ?? "",
       split: expense.split,
+      attachments: expense.attachments,
     });
   }
 
@@ -128,6 +165,16 @@ export function Ledger({
     else await api.addExpense(draft);
     setExpenseForm(null);
     refresh(expenseId ? "已改好這筆帳。" : "已記上一筆。");
+  }
+
+  async function removeSavedAttachment(attachmentId: string) {
+    setError(null);
+    try {
+      await api.deleteAttachment(groupId, attachmentId);
+      refresh("已刪除收據附檔。");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "刪除附檔失敗。");
+    }
   }
 
   async function confirmVoid(value: string) {
@@ -161,7 +208,9 @@ export function Ledger({
       <h1 id="page-title" tabIndex={-1}>
         {detail?.group.name ?? "群組"}
       </h1>
-      <p className="text-muted">{currency ? `幣別 ${currency}。金額是最小貨幣單位。` : "正在讀取帳本。"}</p>
+      <p className="text-muted">
+        {currency ? `預設幣別 ${currency}。外幣支出會依匯率折算後計入餘額。` : "正在讀取帳本。"}
+      </p>
       {error ? (
         <>
           <p role="alert" tabIndex={-1}>{error}</p>
@@ -173,7 +222,7 @@ export function Ledger({
       <p role="status">{status}</p>
       {!detail && !error ? <progress aria-label="正在讀取帳本" /> : null}
 
-      {detail && balances && activity && plan && summary ? (
+      {detail && balances ? (
         <>
           <section aria-labelledby="balances-title" className="mt-6">
             <h2 id="balances-title">餘額</h2>
@@ -202,14 +251,21 @@ export function Ledger({
             </p>
           </section>
 
-          <SettlementSection
-            detail={detail}
-            plan={plan}
-            userId={session.userId}
-            names={names}
-            refreshing={refreshing}
-            onAction={openSettleUp}
-          />
+          {plan ? (
+            <SettlementSection
+              detail={detail}
+              plan={plan}
+              userId={session.userId}
+              names={names}
+              refreshing={refreshing}
+              onAction={openSettleUp}
+            />
+          ) : panelErrors.plan ? (
+            <section aria-labelledby="settlements-title" className="mt-8">
+              <h2 id="settlements-title">結清</h2>
+              <p role="alert">{panelErrors.plan}</p>
+            </section>
+          ) : null}
 
           <section aria-labelledby="expenses-title" className="mt-8">
             <h2 id="expenses-title">支出</h2>
@@ -217,6 +273,8 @@ export function Ledger({
             <ul className="stack mt-3">
               {detail.expenses.map((expense) => {
                 const excluded = detail.members.filter((member) => !expense.participantIds.includes(member.id));
+                const isForeign = expense.currency !== expense.convertedCurrency;
+                const origShareMap = new Map(expense.originalShares.map((item) => [item.participantId, item.amount]));
                 return (
                   <li key={expense.id} className="card">
                     <article aria-labelledby={`expense-${expense.id}`}>
@@ -229,6 +287,12 @@ export function Ledger({
                           {formatMoney(expense.amount, expense.currency)}
                         </p>
                       </div>
+                      {isForeign ? (
+                        <p className="text-sm text-muted">
+                          折合 <span className="money">{formatMoney(expense.convertedAmount, expense.convertedCurrency)}</span>
+                          {expense.fxRate ? `（匯率 1 ${expense.currency} = ${formatRateDisplay(expense.fxRate)} ${expense.convertedCurrency}）` : ""}
+                        </p>
+                      ) : null}
                       <p>
                         {names.get(expense.payerId) ?? "成員"} 先付，{splitLabel(expense.split.type)}，
                         {String(expense.participantIds.length)} 人
@@ -236,13 +300,40 @@ export function Ledger({
                       {excluded.length > 0 ? <p>{excluded.map((member) => member.displayName).join("、")}沒有分攤</p> : null}
                       {expense.note ? <p>{expense.note}</p> : null}
                       <ul className="stack mt-2 text-sm text-muted">
-                        {expense.shares.map((share) => (
-                          <li key={share.participantId} className="share-line">
-                            <span>{names.get(share.participantId) ?? share.participantId}</span>
-                            <span className="money">{formatMoney(share.amount, expense.currency)}</span>
-                          </li>
-                        ))}
+                        {expense.shares.map((share) => {
+                          const orig = origShareMap.get(share.participantId);
+                          return (
+                            <li key={share.participantId} className="share-line">
+                              <span>{names.get(share.participantId) ?? share.participantId}</span>
+                              <span className="money">
+                                {formatMoney(share.amount, expense.convertedCurrency)}
+                                {isForeign && orig ? `（原幣 ${formatMoney(orig, expense.currency)}）` : ""}
+                              </span>
+                            </li>
+                          );
+                        })}
                       </ul>
+                      {expense.attachments.length > 0 ? (
+                        <ul className="attachment-list mt-2">
+                          {expense.attachments.map((att) => (
+                            <li key={att.id} className="attachment-item">
+                              <a href={att.downloadPath} target="_blank" rel="noopener noreferrer">
+                                {att.filename}
+                              </a>
+                              <span className="text-sm text-muted">{formatBytes(att.byteSize)}</span>
+                              {expense.voided ? null : (
+                                <button
+                                  type="button"
+                                  className="secondary attachment-remove"
+                                  onClick={() => void removeSavedAttachment(att.id)}
+                                >
+                                  刪除<span className="visually-hidden"> {att.filename}</span>
+                                </button>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
                       {expense.voided ? null : (
                         <div className="mt-3 flex gap-2">
                           <button type="button" className="secondary" onClick={() => openEdit(expense)}>
@@ -306,21 +397,36 @@ export function Ledger({
             </button>
           </section>
 
-          <LedgerSummary summary={summary} names={names} />
+          {summary ? (
+            <LedgerSummary summary={summary} names={names} />
+          ) : panelErrors.summary ? (
+            <section aria-labelledby="ledger-summary-title" className="mt-8">
+              <h2 id="ledger-summary-title">統計</h2>
+              <p role="alert">{panelErrors.summary}</p>
+            </section>
+          ) : null}
 
-          <section aria-labelledby="activity-title" className="mt-8">
-            <h2 id="activity-title">活動紀錄</h2>
-            <ol className="stack mt-3">
-              {activity.entries.map((entry) => (
-                <li key={entry.id} className="card">
-                  <p>{activitySummary(entry, names, settlements)}</p>
-                  <p className="text-sm text-muted">
-                    <time dateTime={entry.createdAt}>{formatWhen(entry.createdAt)}</time>
-                  </p>
-                </li>
-              ))}
-            </ol>
-          </section>
+          {activity ? (
+            <section aria-labelledby="activity-title" className="mt-8">
+              <h2 id="activity-title">活動紀錄</h2>
+              <ol className="stack mt-3">
+                {activity.entries.map((entry) => (
+                  <li key={entry.id} className="card">
+                    <p>{activitySummary(entry, names, settlements)}</p>
+                    <p className="text-sm text-muted">
+                      <time dateTime={entry.createdAt}>{formatWhen(entry.createdAt)}</time>
+                      {entry.via === "mcp" ? ` · 經由 MCP${entry.clientId ? ` (${entry.clientId})` : ""}` : ""}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          ) : panelErrors.activity ? (
+            <section aria-labelledby="activity-title" className="mt-8">
+              <h2 id="activity-title">活動紀錄</h2>
+              <p role="alert">{panelErrors.activity}</p>
+            </section>
+          ) : null}
         </>
       ) : null}
 

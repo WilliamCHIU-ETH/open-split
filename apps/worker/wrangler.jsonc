@@ -5,7 +5,7 @@
   "compatibility_date": "2026-11-20",
   // Node.js compatibility is already on for this date. Do not set nodejs_compat;
   // workerd rejects that flag once the compatibility date enables it.
-  // database_id is a placeholder. Replace it with `wrangler d1 create open-split` before the first deploy.
+  // database_id, kv id, and bucket_name below are placeholders until Slice 6+ prod setup.
   // Do not put real secrets in this file. Local secrets belong in .dev.vars.
   "observability": {
     "enabled": true,
@@ -24,12 +24,35 @@
     "ENVIRONMENT": "production",
     "AUTH_DEV_IDENTITIES": "false"
   },
+  // Declared so 'wrangler types' generates these in Env in CI too (ADR-0001: do not hand-write Env).
+  // Use .dev.vars locally and 'wrangler secret put' for deployments. Never put values here.
+  "secrets": {
+    "required": [
+      "COOKIE_ENCRYPTION_KEY",
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_CLIENT_SECRET",
+      "MCP_ALLOWED_EMAILS",
+      "PUBLIC_BASE_URL"
+    ]
+  },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "open-split",
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "RECEIPTS_BUCKET",
+      "bucket_name": "open-split-receipts"
     }
   ]
 }

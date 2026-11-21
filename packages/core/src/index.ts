@@ -54,3 +54,19 @@ export {
   type CategorySummary,
   type MemberSummary,
 } from "./summary.ts";
+
+export {
+  CURRENCY_EXPONENTS,
+  SUPPORTED_CURRENCIES,
+  allocateConvertedExpense,
+  convertMinor,
+  currencyExponent,
+  formatMinorByCurrency,
+  formatMinorDecimal,
+  isSupportedCurrency,
+  parseMajorToMinor,
+  parseRateRatio,
+  type ConvertMinorInput,
+  type ConvertedExpenseAllocation,
+  type FxRateRatio,
+} from "./currency.ts";

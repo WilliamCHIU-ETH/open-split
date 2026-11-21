@@ -1,9 +1,8 @@
+import { SUPPORTED_CURRENCIES } from "@open-split/core";
 import { useEffect, useState, type FormEvent } from "react";
 import type { CurrentSession, Group } from "@open-split/contracts";
 import { ApiError, api } from "./api.ts";
 import { Dialog } from "./Dialog.tsx";
-
-const CURRENCIES = ["TWD", "JPY", "USD"] as const;
 
 export function Home({ session }: { session: CurrentSession }) {
   const [groups, setGroups] = useState<Group[] | null>(null);
@@ -52,7 +51,7 @@ export function Home({ session }: { session: CurrentSession }) {
       <h1 id="page-title" tabIndex={-1}>
         你的群組
       </h1>
-      <p className="text-muted">平均、指定金額、百分比或份數。還沒註冊的朋友可以先記在帳上。</p>
+      <p className="text-muted">平均、指定金額、百分比或份數。支援多幣別匯率換算與收據附檔。</p>
       {error ? <p role="alert">{error}</p> : null}
       {groups === null && !error ? <progress aria-label="正在讀取群組" /> : null}
       {groups?.length === 0 ? <p>還沒有群組。建立第一個，就可以開始記帳。</p> : null}
@@ -85,25 +84,19 @@ export function Home({ session }: { session: CurrentSession }) {
             </label>
             <input id="group-name" name="name" required maxLength={80} autoComplete="off" enterKeyHint="next" />
           </div>
-          <fieldset className="field">
-            <legend>預設幣別</legend>
-            {CURRENCIES.map((currency) => (
-              <label key={currency} className="choice" htmlFor={`currency-${currency}`}>
-                <input
-                  id={`currency-${currency}`}
-                  className="choice-input"
-                  type="radio"
-                  name="currency"
-                  value={currency}
-                  defaultChecked={currency === "TWD"}
-                />
-                <span>{currency}</span>
-              </label>
-            ))}
+          <div className="field">
+            <label htmlFor="group-currency">預設幣別</label>
+            <select id="group-currency" name="currency" defaultValue="TWD" aria-describedby="currency-help">
+              {SUPPORTED_CURRENCIES.map((currency) => (
+                <option key={currency} value={currency}>
+                  {currency}
+                </option>
+              ))}
+            </select>
             <p id="currency-help" className="text-sm text-muted">
-              這次的支出用同一個幣別。換匯之後才做。
+              餘額與統計會統一換算成預設幣別；記帳時可選其他幣別並填入匯率。
             </p>
-          </fieldset>
+          </div>
           {formError ? (
             <p role="alert" tabIndex={-1}>
               {formError}

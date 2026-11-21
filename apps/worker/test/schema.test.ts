@@ -13,6 +13,8 @@ const expected = [
   "expense_shares",
   "settlements",
   "payment_profiles",
+  "attachments",
+  "idempotency_keys",
   "activity_log",
   "line_push_targets",
   "oauth_clients",
